@@ -1,0 +1,78 @@
+= Litmus =
+:source-language: odin
+
+Litmus is a literal programming markup. It is exceptionally simple and is
+assumed to be embedded in some other documentation markup language, such as
+Markdown or AsciiDoc.
+
+It is also assumed that the programmer will want to write code in the Litmus
+document as well as their code editor of choice, and supports real time updates
+to wherever the editing is taking plac. This way Litmus provides the best of both
+worlds.
+
+By default Litmus generates html with links to code references to quickly
+navigate the code. References can also be expanded inline.
+
+Litmus is so simple that it can be described within a screen.
+
+It is quickest to explain with an example:
+
+====
+… :file: hello.odin
+
+This is the main body of the program: +
+… body
+```
+fmt.println("Hello Litmus!")
+```
+
+A main procedure must hold the body. +
+… main
+```
+… header
+
+main :: proc() {
+    … body
+}
+```
+
+The header defines the package and the import needed to print the message. +
+… header :file: hello.odin
+```
+package hello
+
+import "core:fmt"
+```
+====
+
+`…` is called a _Litmus command_. It is always at the beginning of a line, but
+may have leading whitespace. When it appears in the documentation it is
+referred to as a _document command_. When it appears in a code excerpt, it is
+referred to as an _excerpt command_.
+
+`… :file: hello.odin` says that any code underneath is in the hello.odin file. This applies to all lines below the command until the end of the document, or until another command with a `:file:` attribute.
+
+[%hardbreaks]
+Attributes are declared by surrounding some text with colons.
+There are different attributes for different purposes.
+The document command `... body` identifies an excerpt named _body_ that will follow on the next line.
+The excerpt command `... body` is a reference to another code excerpt. Any indenting before the command will be applied to the referenced code.
+
+That is really all there is to it!
+
+When Litmus processes this document, it will
+produce this code in the file hello.odin:
+====
+```
+package hello
+
+import "core:fmt"
+
+main :: proc() {
+    fmt.println("Hello Litmus!")
+}
+```
+====
+
+Running Litmus in watch mode, edits to the source file will update this
+document. It can optionally update the final documentation as well for preview.
