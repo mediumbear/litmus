@@ -1,8 +1,107 @@
 package litmus
 
-import "core:odin/tokenizer"
 import "core:fmt"
 import str "core:strings"
+
+/*
+    # Litmus document structure
+
+    A Litmus document is Markdown-ish prose interleaved with fenced code
+    blocks. The marker `… ` (horizontal ellipsis + space) introduces a
+    Litmus command.
+
+    ## Code excerpts (outside a fence)
+
+        … the imports
+        ```
+        import something
+        ```
+
+    ## Source file excerpt
+
+        … :file: doit.odin
+
+    Everything that follows (until the next file excerpt) tangles into
+    this file.
+
+    ## Named excerpt bound to a source file
+
+        … the imports :file: doit.odin
+        ```
+        import something
+        ```
+
+    ## Doc-only excerpt (not tangled)
+
+        … :doc:
+
+    ## Code references (inside a fence)
+
+        main :: proc() {
+            … the rest
+        }
+
+    At tangle time the reference `… the rest` is replaced with the body
+    of that excerpt, indented by the reference's own leading whitespace.
+    The excerpt itself is stored without its own indentation.
+*/
+
+Token_Kind :: enum {
+    FenceStart,           // ``` or ```odin etc.
+    FenceEnd,             // closing ```
+    CodeExcerptCommand,   // the "… " outside a fence
+    CodeExcerpt,          // the text after "… " outside a fence
+    CodeReferenceCommand, // the "… " inside a fence
+    CodeReference,        // the text after "… " inside a fence
+    DocLine,              // any line outside a fence
+    CodeLine,             // any line inside a fence
+}
+
+Token :: struct {
+    kind:   Token_Kind,
+    line:   int, // 1-indexed
+    col:    int, // 1-indexed, byte column
+    length: int, // byte length
+    text:   string,
+}
+
+COMMAND :: "… "
+
+tokenize :: proc(source: string, allocator := context.allocator) -> [dynamic]Token {
+    tokens := make([dynamic]Token, allocator)
+    in_fence := false
+    line_num := 0
+    src := source
+    for line in str.split_lines_iterator(&src) {
+        line_num += 1
+
+        if str.starts_with(line, "```") {
+            kind: Token_Kind = .FenceEnd if in_fence else .FenceStart
+            in_fence = !in_fence
+            append(&tokens, Token{kind, line_num, 1, len(line), line})
+            continue
+        }
+
+        trimmed := str.trim_left(line, " \t")
+        if str.starts_with(trimmed, COMMAND) {
+            indent := len(line) - len(trimmed)
+            cmd_col := indent + 1
+            ref_start := indent + len(COMMAND)
+            ref_text := line[ref_start:]
+
+            cmd_kind: Token_Kind = .CodeReferenceCommand if in_fence else .CodeExcerptCommand
+            ref_kind: Token_Kind = .CodeReference if in_fence else .CodeExcerpt
+
+            append(&tokens, Token{cmd_kind, line_num, cmd_col, len(COMMAND), line[indent:ref_start]})
+            append(&tokens, Token{ref_kind, line_num, ref_start + 1, len(ref_text), ref_text})
+            continue
+        }
+
+        kind: Token_Kind = .CodeLine if in_fence else .DocLine
+        append(&tokens, Token{kind, line_num, 1, len(line), line})
+    }
+    return tokens
+}
 
 sample := `Here is a sample to parse. The litmus command starts with …
 Here is some code:
@@ -27,126 +126,11 @@ along with the imports:
 import "core.fmt"
 ` + "```"
 
-/*
-    # Code excerpts
-
-    ## A named excerpt
-        > ... the imports
-        > ```
-        > import something
-        > ```
-
-    ## Source file
-        > ... :file: doit.odin
-    When this appears, everything that follows is in this file.
-
-    ## A named export with source file
-        > ... the imports :file: doit.odin
-        > ```
-        > import something
-        > ```
-
-    ## Doc excerpt - these don't go into the source code - this is code that is documentation. 
-        > ... :doc:
-*/
-
-// Most col = 1 (1 indexed). But there can be whitespace in front of a code excerpt for tabbing. Important when tangling.
-Token_Kind :: enum {
-    // e.g. ```, ```odin etc.
-    FenceStart,
-    // should only be ```.
-    FenceEnd,
-    // "… " inside a code fence, refers to some other code.
-    CodeReferenceCommand,
-    CodeReference,
-    CodeExcerptCommand,
-    // "… " in the document area, can designate a file, or a reference name.
-    CodeExcerpt,
-    // A line of documentation.
-    DocLine,
-    // A line of source code, inside code fences.
-    CodeLine,
-}
-
-// Note that the "text" is always the entire line. These might have more info
-// that is parsed later, e.g. the source code type in a code fence, like
-// "```odin".
-Token :: struct {
-    kind: Token_Kind,
-    line, col, length: int,
-    text: string,
-}
-
-tokens: [dynamic]Token
-
 main :: proc() {
-    fmt.println(sample)
-    // Need to emit tokens:
-    // fenceStart - the first ```
-    // fenceEnd - the "closing" ```
-    // excerpt - a … in a doc area
-    // reference - a … in a code fence
-    // docLine - a line of text outside of fences
-    // codeLine - a line of text inside of fences
+    tokens := tokenize(sample)
+    defer delete(tokens)
 
-    // With the above we will create an AST. Lines will become code and doc chunks. code chunks become a code block.
-    // This should be enough!
-
-    // The token that shows the start of a Litmus command.
-    command := "… "
-    commandLen := len(command)
-    inFence := false
-    lineNum := 0
-    for line in str.split_lines_iterator(&sample) {
-        lineNum += 1
-        if str.starts_with(line, "```") {
-            inFence = !inFence
-            if inFence {
-                fmt.println(lineNum, "Fence start")
-                token := Token{ kind = .FenceStart, line = lineNum, col = 1, length = len(line), text = line[0:] }
-                append(&tokens, token)
-            } else {
-                fmt.println(lineNum, "Fence end")
-                token := Token{ kind = .FenceEnd, line = lineNum, col = 1, length = len(line), text = line[0:] }
-                append(&tokens, token)
-            }
-
-            continue
-        }
-
-        if str.starts_with(str.trim(line, " \t"), command) {
-            index := str.index(line, command)
-            if inFence {
-                fmt.println(lineNum, "Code Reference = ", line)
-                token := Token{ kind = .CodeReferenceCommand, line = lineNum, col = 1, length = index + commandLen, text = line[0:index + commandLen] }
-                append(&tokens, token)
-                refToken := Token{ kind = .CodeReference, line = lineNum, col = index + commandLen, length = len(line) - index - commandLen, text = line[index + commandLen:] }
-                append(&tokens, refToken)
-            } else {
-                fmt.println(lineNum, "Code Excerpt = ", line)
-                token := Token{ kind = .CodeExcerptCommand, line = lineNum, col = 1, length = index + commandLen, text = line[0:index + commandLen] }
-                append(&tokens, token)
-                refToken := Token{ kind = .CodeExcerpt, line = lineNum, col = index + commandLen, length = len(line) - index - 1, text = line[index + commandLen:] }
-                append(&tokens, refToken)
-            }
-        } else {
-            if inFence {
-                fmt.println(lineNum, "Code line = ", line)
-                token := Token{ kind = .CodeLine, line = lineNum, col = 1, length = len(line), text = line }
-                append(&tokens, token)
-            } else {
-                fmt.println(lineNum, "Doc line = ", line)
-                token := Token{ kind = .DocLine, line = lineNum, col = 1, length = len(line), text = line }
-                append(&tokens, token)
-            }
-        }
+    for tok in tokens {
+        fmt.println(tok)
     }
-
-    for token in tokens {
-        fmt.println(token)
-    }
-
-    fmt.println("\n---\n")
-
-    fmt.println(sample)
 }
