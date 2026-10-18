@@ -93,8 +93,8 @@
       steps.forEach((s, idx) => {
         if (s.outside) return;
         shown++;
-        const edit = d === 0 ? 'no edit' : (s.down ? `inserting changed line ${s.mid[1]}` : `deleting base line ${s.mid[0]}`);
-        f.push({ stage: 'search', round: d, upto: idx, text: `Round ${d}: with ${d} edit${d === 1 ? '' : 's'}, diagonal ${s.k} is reached by ${edit}, and then follows free diagonals as far as they go, to (${s.to[0]}, ${s.to[1]}).` });
+        const edit = d === 0 ? 'no edit' : (s.down ? `inserting changed line ${r.start + s.mid[1] - 1}` : `deleting base line ${r.start + s.mid[0] - 1}`);
+        f.push({ stage: 'search', round: d, upto: idx, text: `Round ${d}: with ${d} edit${d === 1 ? '' : 's'}, diagonal ${s.k} is reached by ${edit}, and then follows free diagonals as far as they go, to base ${r.start + s.to[0]}, changed ${r.start + s.to[1]}.` });
       });
     });
     f.push({ stage: 'found', text: `Round ${r.found} reaches the bottom right corner: ${r.found} edits is the fewest that turn the middle of the base into the middle of the changed text. Myers' search looked at ${total} places to know that.` });
@@ -172,9 +172,9 @@
     const stage = ['lines', 'trim', 'grid', 'search', 'found', 'back', 'hunks'].indexOf(frame.stage);
     const width = canvas.parentElement.clientWidth - 24;
     const cell = Math.max(26, Math.min(52, Math.floor((width - 140) / (r.base.length + 1))));
-    const ox = 80 + r.start * 0, oy = 70; // the grid's top left corner
+    const ox = 80, oy = 96; // the grid's top left corner
     const gridW = r.n * cell, gridH = r.m * cell;
-    const height = oy + Math.max(gridH, 0) + 60;
+    const height = oy + Math.max(gridH, 0) + 30 + 22 * Math.max(1, r.end);
     const dpr = window.devicePixelRatio || 1;
     canvas.width = width * dpr; canvas.height = height * dpr;
     canvas.style.height = height + 'px';
@@ -190,12 +190,15 @@
 
     // Hunk bands under everything else.
     if (stage >= 6) {
-      r.deleted.forEach((d, i) => { if (d) { g.fillStyle = colors.deleted; g.fillRect(px(i), oy - 40, cell, gridH + 40); } });
+      r.deleted.forEach((d, i) => { if (d) { g.fillStyle = colors.deleted; g.fillRect(px(i), oy - 60, cell, gridH + 60); } });
       r.inserted.forEach((d, j) => { if (d) { g.fillStyle = colors.inserted; g.fillRect(ox - 60, py(j), gridW + 60, cell); } });
     }
 
     // The lines as chips: the base across the top, the changed text down the left.
-    const chip = (label, x, y, color, strike) => {
+    // Each line has its number, counting from 0 in the whole text, in small grey.
+    const chip = (label, x, y, color, strike, number, nx, ny) => {
+      g.font = '11px system-ui, sans-serif'; g.fillStyle = '#6b7280'; g.fillText(String(number), nx, ny);
+      g.font = '14px ui-monospace, SFMono-Regular, Menlo, monospace';
       g.fillStyle = color; g.fillText(label, x, y);
       if (strike) { g.strokeStyle = color; g.beginPath(); g.moveTo(x - 7, y); g.lineTo(x + 7, y); g.stroke(); }
     };
@@ -204,22 +207,23 @@
       const mi = i - r.start;
       let x;
       if (!trimmed) x = ox + (i + 0.5) * cell * (r.n / Math.max(1, r.base.length));
-      else if (i < r.start) x = ox - 22 - (r.start - 1 - i) * 18;
-      else if (!inMiddle) x = ox + gridW + 22 + (i - (r.base.length - r.end)) * 18;
+      else if (i < r.start) x = ox - (r.start - i) * 22;
+      else if (!inMiddle) x = px(r.n) + (i - (r.base.length - r.end)) * 22;
       else x = px(mi);
       const color = trimmed && !inMiddle ? colors.trimmed : (stage >= 6 && r.deleted[mi] ? colors.deletedChip : colors.text);
-      chip(line, x, oy - 22, color, false);
+      chip(line, x, oy - 36, color, false, i, x, oy - 52);
     });
     r.changed.forEach((line, j) => {
       const inMiddle = j >= r.start && j < r.changed.length - r.end;
       const mj = j - r.start;
       let y;
       if (!trimmed) y = oy + (j + 0.5) * cell * (r.m / Math.max(1, r.changed.length));
-      else if (j < r.start) y = oy - 4 - (r.start - j) * 18 + 4;
-      else if (!inMiddle) y = oy + gridH + 18 + (j - (r.changed.length - r.end)) * 18;
+      else if (j < r.start) y = oy - 14 - (r.start - 1 - j) * 18;
+      else if (!inMiddle) y = py(r.m) + (j - (r.changed.length - r.end)) * 22;
       else y = py(mj);
       const color = trimmed && !inMiddle ? colors.trimmed : (stage >= 6 && r.inserted[mj] ? colors.insertedChip : colors.text);
-      chip(line, trimmed && !inMiddle ? ox - 52 : ox - 30, y, color, false);
+      const cx = ox - 30;
+      chip(line, cx, y, color, false, j, cx - 18, y);
     });
     g.fillStyle = colors.muted; g.font = '12px system-ui, sans-serif';
     g.textAlign = 'left'; g.fillText('base →', ox, 14);
