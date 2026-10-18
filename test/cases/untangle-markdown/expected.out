@@ -1,3 +1,4 @@
 changed 1 line, removed 0 lines, added 1 line, in 1 document
 needs prose: doc.md:1 (file root of m.txt) grew by 1 line
 placed at a boundary: m.txt:3 went after "… e" at doc.md:4
+next: write prose for the 1 block listed above, then run litmus check

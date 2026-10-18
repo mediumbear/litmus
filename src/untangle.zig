@@ -346,6 +346,14 @@ pub fn verify(arena: Allocator, docs: []const Document, roots: []const []const u
     var fs: MemoryFs = .{ .docs = docs, .texts = texts };
     var diags = types.Diagnostics.init(arena);
     const set = try @import("docset.zig").load(arena, &fs, roots, &diags);
+    // Style never changes code (L10), and the style files are not in memory, so C12 does not count here.
+    var kept: usize = 0;
+    for (diags.list.items) |d| {
+        if (std.mem.startsWith(u8, d.message, "C12:")) continue;
+        diags.list.items[kept] = d;
+        kept += 1;
+    }
+    diags.list.items.len = kept;
     if (diags.list.items.len == 0) {
         const resolved = try resolve_mod.resolve(arena, set.docs, set.blocks, &diags);
         if (diags.list.items.len == 0) {

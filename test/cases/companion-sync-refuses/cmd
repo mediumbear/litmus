@@ -1,0 +1,1 @@
+litmus adopt -o code --companion notes/c.adoc . && perl -pi -e 's/return a \+ b;/return a - b;/' notes/c.adoc && litmus sync -o code notes/c.adoc; litmus tangle -o code notes/c.adoc; true

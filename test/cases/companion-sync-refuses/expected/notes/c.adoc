@@ -1,0 +1,44 @@
+= c
+:litmus-companion:
+:toc: left
+:toclevels: 3
+:sectanchors:
+
+This document was made by `litmus adopt` from 1 file. Each file is a section, with its code split into excerpts at its declarations. The excerpts can be moved into the order that explains the code best, and the prose goes between them.
+
+== counter.zig
+
+… :file: counter.zig
+[source,zig]
+----
+//! A counter.
+
+… std
+
+… add
+
+… test adds
+----
+
+… std :file: counter.zig
+[source,zig]
+----
+const std = @import("std");
+----
+
+… add :file: counter.zig
+[source,zig]
+----
+pub fn add(a: u32, b: u32) u32 {
+    return a - b;
+}
+----
+
+… test adds :file: counter.zig
+[source,zig]
+----
+test "adds" {
+    try std.testing.expectEqual(3, add(1, 2));
+}
+----
+

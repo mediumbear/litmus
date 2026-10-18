@@ -73,10 +73,11 @@ untangle_case() {
   # was removed stays missing.
   [ -f "$dir/remove" ] || (cd "$sandbox" && "$litmus" check -o "$out" $args) > /dev/null 2> "$work/stderr" || fail "$name" "check failed after untangle: $(cat "$work/stderr")"
   (cd "$sandbox" && "$litmus" untangle -o "$out" $options $args) > "$work/stdout" 2> /dev/null
-  [ "$(cat "$work/stdout")" = "nothing to untangle" ] || fail "$name" "the second untangle said: $(cat "$work/stdout")"
+  [ "$(head -n 1 "$work/stdout")" = "nothing to untangle" ] || fail "$name" "the second untangle said: $(cat "$work/stdout")"
 }
 
-# A case with a `cmd` file is an init case. The others are tangle cases.
+# A case with a `cmd` file runs that command: init, adopt, or a few commands in a row.
+# The others are tangle cases.
 init_case() {
   local dir=$1 name=$2 sandbox=$work/sandbox cmd
   rm -rf "$sandbox" && mkdir -p "$sandbox"
@@ -85,7 +86,11 @@ init_case() {
   run_init "$sandbox" "$cmd" || fail "$name" "init failed: $(cat "$work/stderr")"
   expect_same "$name (what init prints)" "$work/stdout" "$( [ -f "$dir/expected.out" ] && echo "$dir/expected.out" || echo /dev/null )"
   expect_same "$name (the files)" "$sandbox" "$dir/expected"
-  # I4: the second run changes nothing.
+  # I4: a second init changes nothing. Other commands run once.
+  case " $cmd " in
+    *" init "*) ;;
+    *) return ;;
+  esac
   run_init "$sandbox" "$cmd"
   [ -s "$work/stdout" ] && fail "$name" "the second init printed: $(cat "$work/stdout")"
   expect_same "$name (the files after a second run)" "$sandbox" "$dir/expected"

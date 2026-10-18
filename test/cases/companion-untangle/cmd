@@ -1,0 +1,1 @@
+litmus adopt -o code --companion notes/c.adoc . && printf 'pub fn more() void {}\n' >> code/counter.zig && litmus untangle -o code notes/c.adoc && litmus where -o code notes/c.adoc counter.zig:12

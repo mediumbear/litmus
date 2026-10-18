@@ -188,8 +188,8 @@ Tangles the document set into files under `DIR` (the current directory by defaul
 `litmus check [-o DIR] DOCUMENT...`::
 Tangles in memory and compares the result with the files under `DIR`. For each file that differs or is missing, it prints the first line that differs and where that line is in the document. It exits with 1 if any file differs. This is the round-trip check, run after every change.
 
-`litmus where [-o DIR] FILE:LINE`::
-Reads the map under `DIR` and prints the document line that `FILE:LINE` came from, as `document:line (excerpt)`, with `(file root)` for the root of the file. This turns a compiler error into a place in the document.
+`litmus where [-o DIR] [DOCUMENT] FILE:LINE`::
+Reads the map under `DIR`, or the map of the companion `DOCUMENT` (R2), and prints the document line that `FILE:LINE` came from, as `document:line (excerpt)`, with `(file root)` for the root of the file. This turns a compiler error into a place in the document.
 
 `litmus guide`::
 Prints the guide for agents, below.
@@ -335,7 +335,7 @@ A companion document explains code that it does not own: code someone else wrote
 
 *Rule A1.* Each `PATH` is relative to `DIR`. A folder stands for the files in it, found recursively and taken in sorted order. Entries whose name starts with `.`, the folders `zig-out`, `build`, `DerivedData`, `node_modules` and `Pods`, and files that hold a zero byte, are skipped.
 
-*Rule A2.* Adopt refuses to write a document that exists, and refuses a file that cannot go into a block: one with a line that starts with `…` after spaces and tabs (L4), or with a line that starts with `include::` (L6).
+*Rule A2.* Adopt refuses to write a document that exists, and refuses a file that cannot go into a block: one with a line that starts with `…` after spaces and tabs (L4), one with a line that starts with `include::` (L6), or one that does not end with a newline (T3). Before it writes anything, adopt tangles the new document in memory and requires every file back, byte for byte.
 
 *Rule A3.* Each file becomes a section whose title is its path, with a file root and excerpts. A line `// MARK: - Title` or `// MARK: Title` becomes a subsection with that title, where it falls between excerpts.
 

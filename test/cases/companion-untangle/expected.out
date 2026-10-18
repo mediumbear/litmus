@@ -1,0 +1,7 @@
+wrote notes/c.adoc: 1 file, 3 excerpts
+next: read the code, propose an outline of chapters and the order that explains it best, and after it is agreed write the prose; run litmus check after each chapter
+changed 0 lines, removed 0 lines, added 1 line, in 1 document
+needs prose: notes/c.adoc:11 (file root of counter.zig) grew by 1 line
+placed at a boundary: counter.zig:12 went after "… test adds" at notes/c.adoc:20
+next: write prose for the 1 block listed above, then run litmus check
+notes/c.adoc:21 (file root)

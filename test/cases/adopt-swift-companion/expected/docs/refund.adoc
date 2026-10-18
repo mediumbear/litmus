@@ -1,0 +1,161 @@
+= refund
+:litmus-companion:
+:toc: left
+:toclevels: 3
+:sectanchors:
+
+This document was made by `litmus adopt` from 2 files. Each file is a section, with its code split into excerpts at its declarations. The excerpts can be moved into the order that explains the code best, and the prose goes between them.
+
+== Sources/Payments/Ledger.swift
+
+… :file: Sources/Payments/Ledger.swift
+[source,swift]
+----
+… Ledger
+----
+
+… Ledger :file: Sources/Payments/Ledger.swift
+[source,swift]
+----
+actor Ledger {
+    var entries: [String] = []
+}
+----
+
+== Sources/Payments/Refund.swift
+
+… :file: Sources/Payments/Refund.swift
+[source,swift]
+----
+… Foundation
+
+// MARK: - Errors
+
+… RefundError
+
+… RefundService
+
+… extension RefundService
+
+… Ledger
+
+----
+
+… Foundation :file: Sources/Payments/Refund.swift
+[source,swift]
+----
+// A refund service.
+import Foundation
+----
+
+=== Errors
+
+… RefundError :file: Sources/Payments/Refund.swift
+[source,swift]
+----
+enum RefundError: Error {
+    case declined
+}
+----
+
+… RefundService :file: Sources/Payments/Refund.swift
+[source,swift]
+----
+/// Retries refunds.
+@MainActor
+public final class RefundService {
+    … RefundService.attempts
+
+    … RefundService.init
+
+    // MARK: Retrying
+
+    … RefundService.retry
+
+    … RefundService.==
+
+    … RefundService.reset
+
+    … RefundService.reset 2
+
+}
+----
+
+… RefundService.attempts :file: Sources/Payments/Refund.swift
+[source,swift]
+----
+private(set) var attempts = 0
+let limit: Int
+----
+
+… RefundService.init :file: Sources/Payments/Refund.swift
+[source,swift]
+----
+init(limit: Int) {
+    self.limit = limit
+    self.attempts = 0
+    self.attempts = 0
+    self.attempts = 0
+    self.attempts = 0
+    self.attempts = 0
+    self.attempts = 0
+    self.attempts = 0
+    self.attempts = 0
+    self.attempts = 0
+    self.attempts = 0
+}
+----
+
+=== Retrying
+
+… RefundService.retry :file: Sources/Payments/Refund.swift
+[source,swift]
+----
+/// Tries again.
+func retry(_ id: String) async throws -> Bool {
+    attempts += 1
+    if attempts > limit { throw RefundError.declined }
+    return true
+}
+----
+
+… RefundService.== :file: Sources/Payments/Refund.swift
+[source,swift]
+----
+static func == (a: RefundService, b: RefundService) -> Bool {
+    return a.limit == b.limit
+}
+----
+
+… RefundService.reset :file: Sources/Payments/Refund.swift
+[source,swift]
+----
+func reset() {
+    attempts = 0
+}
+----
+
+… RefundService.reset 2 :file: Sources/Payments/Refund.swift
+[source,swift]
+----
+func reset(to n: Int) {
+    attempts = n
+}
+----
+
+… extension RefundService :file: Sources/Payments/Refund.swift
+[source,swift]
+----
+extension RefundService: CustomStringConvertible {
+    var description: String { "refunds" }
+}
+----
+
+… Ledger :file: Sources/Payments/Refund.swift
+[source,swift]
+----
+actor Ledger {
+    var entries: [String] = []
+}
+----
+

@@ -1,3 +1,4 @@
 changed 0 lines, removed 0 lines, added 2 lines, in 1 document
 needs prose: ex.adoc:1 (file root of f.txt) grew by 2 lines
 placed at a boundary: f.txt:5 went after "… e" at ex.adoc:4
+next: write prose for the 1 block listed above, then run litmus check

@@ -1,0 +1,1 @@
+litmus adopt -o . doc.adoc src; true

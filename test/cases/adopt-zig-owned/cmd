@@ -1,0 +1,1 @@
+litmus adopt -o . --style brief.md counter.adoc src
