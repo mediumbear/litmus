@@ -15,6 +15,8 @@ pub const Tangled = struct {
     /// Every line ends with `\n` (T3).
     text: []const u8,
     runs: []const Run,
+    /// The excerpt commands that were expanded, in the order they begin. Untangle needs them.
+    expansions: []const types.Expansion,
 };
 
 const Expander = struct {
@@ -22,6 +24,10 @@ const Expander = struct {
     file: *const resolve.File,
     out: std.ArrayList(u8) = .empty,
     runs: std.ArrayList(Run) = .empty,
+    expansions: std.ArrayList(types.Expansion) = .empty,
+    /// The expansion that the lines now written belong to.
+    current: u32 = types.no_expansion,
+    depth: u32 = 0,
     /// The indents of the excerpt commands being expanded, put together.
     prefix: std.ArrayList(u8) = .empty,
     /// The lines written so far.
@@ -38,9 +44,24 @@ const Expander = struct {
                 command += 1;
                 const mark = self.prefix.items.len;
                 try self.prefix.appendSlice(self.arena, c.indent);
+                const outer = self.current;
+                self.current = @intCast(self.expansions.items.len);
+                try self.expansions.append(self.arena, .{
+                    .first_line = self.lines + 1,
+                    .last_line = self.lines,
+                    .block = b,
+                    .command = @intCast(command - 1),
+                    .prefix = try self.arena.dupe(u8, self.prefix.items),
+                    .outer_len = @intCast(mark),
+                    .depth = self.depth,
+                });
+                self.depth += 1;
                 // Unknown names were reported as C1, and tangling does not happen then.
                 const excerpt = self.file.excerpts.get(c.name).?;
                 for (excerpt.blocks.items) |inner| try self.block(inner);
+                self.expansions.items[self.current].last_line = self.lines;
+                self.current = outer;
+                self.depth -= 1;
                 self.prefix.items.len = mark;
                 continue;
             }
@@ -58,9 +79,10 @@ const Expander = struct {
 
         const last: ?*Run = if (self.runs.items.len > 0) &self.runs.items[self.runs.items.len - 1] else null;
         if (last) |run| {
-            // An empty line carries no indent, so it joins a run of any indent.
-            const same_indent = text.len == 0 or run.indent == indent;
-            if (self.next_block == b and self.next_index == index and same_indent) {
+            // A block is expanded once, so lines that follow each other in it have the same
+            // indent. An empty line carries none, so a run that starts with one takes the
+            // indent of the first line that has text.
+            if (self.next_block == b and self.next_index == index) {
                 run.count += 1;
                 if (text.len > 0) run.indent = indent;
                 self.next_index += 1;
@@ -74,6 +96,8 @@ const Expander = struct {
             .doc_line = b.first_line + index,
             .indent = indent,
             .excerpt = b.label.name orelse ":file:",
+            .expansion = self.current,
+            .block = b,
         });
         self.next_block = b;
         self.next_index = index + 1;
@@ -92,6 +116,7 @@ pub fn tangleAll(arena: Allocator, resolved: resolve.Resolved) ![]const Tangled 
             .executable = file.executable,
             .text = expander.out.items,
             .runs = expander.runs.items,
+            .expansions = expander.expansions.items,
         });
     }
     return result.items;
@@ -242,4 +267,31 @@ test "an excerpt used in a file with no lines, and a file with an empty root" {
     try t.expectEqualStrings("", out[0].text);
     try t.expectEqual(0, out[0].runs.len);
     try t.expect(out[1].executable);
+}
+
+test "expansions: where each excerpt command was expanded, with its indents" {
+    var arena_state = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena_state.deinit();
+    const out = try tangleText(arena_state.allocator(), "… :file: a\n----\ntop\n  … outer\n  … empty\nend\n----\n… outer :file: a\n----\no1\n\t… inner\n----\n… inner :file: a\n----\ni1\ni2\n----\n… empty :file: a\n----\n----\n");
+    const ex = out[0].expansions;
+    try t.expectEqual(3, ex.len);
+    // outer: lines 2 to 4, in the root block's command 0
+    try t.expectEqual(2, ex[0].first_line);
+    try t.expectEqual(4, ex[0].last_line);
+    try t.expectEqual(0, ex[0].command);
+    try t.expectEqualStrings("  ", ex[0].prefix);
+    try t.expectEqual(0, ex[0].outer_len);
+    // inner: lines 3 to 4, in outer's block
+    try t.expectEqual(3, ex[1].first_line);
+    try t.expectEqual(4, ex[1].last_line);
+    try t.expectEqualStrings("  \t", ex[1].prefix);
+    try t.expectEqual(2, ex[1].outer_len);
+    // empty: no lines, so the last line is one before the first
+    try t.expectEqual(5, ex[2].first_line);
+    try t.expectEqual(4, ex[2].last_line);
+    try t.expectEqual(1, ex[2].command);
+    // The runs know their expansion.
+    try t.expectEqual(types.no_expansion, out[0].runs[0].expansion);
+    try t.expectEqual(0, out[0].runs[1].expansion);
+    try t.expectEqual(1, out[0].runs[2].expansion);
 }

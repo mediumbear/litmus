@@ -109,7 +109,7 @@ const runs = [_]types.Run{
 };
 
 fn tangled(text: []const u8, executable: bool) tangle.Tangled {
-    return .{ .path = "a.txt", .executable = executable, .text = text, .runs = &runs };
+    return .{ .path = "a.txt", .executable = executable, .text = text, .runs = &runs, .expansions = &.{} };
 }
 
 fn compareText(tmp: *std.testing.TmpDir, a: Allocator, on_disk: ?[]const u8, file: tangle.Tangled) ![]const Difference {
@@ -125,7 +125,7 @@ test "check: equal files and a missing file" {
     const a = arena_state.allocator();
     try t.expectEqual(1, (try compareText(&tmp, a, null, tangled("x\n", false))).len);
     try t.expectEqual(0, (try compareText(&tmp, a, "x\ny\nz\n", tangled("x\ny\nz\n", false))).len);
-    const missing = (try compare(t.io, a, tmp.dir, &test_docs, &.{.{ .path = "b.txt", .executable = false, .text = "", .runs = &.{} }}))[0];
+    const missing = (try compare(t.io, a, tmp.dir, &test_docs, &.{.{ .path = "b.txt", .executable = false, .text = "", .runs = &.{}, .expansions = &.{} }}))[0];
     try t.expectEqual(.missing, missing.kind);
 }
 

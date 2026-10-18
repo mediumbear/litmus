@@ -12,6 +12,8 @@ pub const Document = struct {
     lines: []const []const u8,
     /// The directory of `path`, without a trailing `/`; empty for the current directory.
     dir: []const u8,
+    /// Whether the text ended with `\n`, so that the document can be written back as it was.
+    final_newline: bool = true,
 };
 
 /// What a document command says (L1, L9). Lines count from 1.
@@ -52,6 +54,30 @@ pub const Run = struct {
     indent: u32,
     /// The excerpt's name, or `:file:` for the file root.
     excerpt: []const u8,
+    /// The expansion the run's lines are in, as an index into the file's expansions,
+    /// or `no_expansion` for the file root. Untangle needs it; the map does not.
+    expansion: u32 = no_expansion,
+    /// The block the run's lines are lines of.
+    block: ?*const Block = null,
+};
+
+pub const no_expansion = std.math.maxInt(u32);
+
+/// One excerpt command, expanded while tangling a file.
+pub const Expansion = struct {
+    /// The output lines it produced, counting from 1. An excerpt with no lines has
+    /// `last_line` one less than `first_line`.
+    first_line: u32,
+    last_line: u32,
+    /// The block that holds the command, and the command's index in it.
+    block: *const Block,
+    command: u32,
+    /// The indents of this command and all the commands around it, put together.
+    prefix: []const u8,
+    /// How many of those bytes belong to the commands around it, not to this one.
+    outer_len: u32,
+    /// How many expansions it is inside of.
+    depth: u32,
 };
 
 pub const Diagnostic = struct {

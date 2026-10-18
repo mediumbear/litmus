@@ -10,4 +10,6 @@ test {
     _ = @import("output.zig");
     _ = @import("compare.zig");
     _ = @import("init.zig");
+    _ = @import("diff.zig");
+    _ = @import("untangle.zig");
 }

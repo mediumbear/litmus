@@ -76,7 +76,7 @@ const Loader = struct {
         const format = formatOf(path);
         const text = if (format != null) self.read(self.fs, self.arena, path) else null;
         const lines = if (text) |bytes| try scan.splitLines(self.arena, bytes) else &[0][]const u8{};
-        try self.docs.append(self.arena, .{ .path = path, .format = format orelse .asciidoc, .lines = lines, .dir = dirOf(path) });
+        try self.docs.append(self.arena, .{ .path = path, .format = format orelse .asciidoc, .lines = lines, .dir = dirOf(path), .final_newline = text == null or text.?.len == 0 or text.?[text.?.len - 1] == '\n' });
         try self.seen.put(self.arena, path, .{ .doc = index, .reading = true });
         defer self.seen.getPtr(path).?.reading = false;
         if (text == null) {

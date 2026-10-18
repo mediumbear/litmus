@@ -142,7 +142,7 @@ test "M: the map of the spec's example, and the hash of its file" {
         .{ .line = 4, .count = 1, .doc = 0, .doc_line = 18, .indent = 4, .excerpt = "greet" },
         .{ .line = 5, .count = 1, .doc = 0, .doc_line = 10, .indent = 0, .excerpt = ":file:" },
     };
-    const rendered = try render(a, &docs, &.{.{ .path = "hello.zig", .executable = false, .text = text, .runs = &runs }});
+    const rendered = try render(a, &docs, &.{.{ .path = "hello.zig", .executable = false, .text = text, .runs = &runs, .expansions = &.{} }});
     try t.expectEqualStrings(
         "litmus map 1\n" ++
             "file\thello.zig\t2bc975ea988a6520d4c5937fbec6d64a98ce153bb2dc852c50affe981da286c2\n" ++

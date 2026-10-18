@@ -123,7 +123,7 @@ pub fn write(io: Io, arena: Allocator, dir: Dir, files: []const tangle.Tangled, 
 const t = std.testing;
 
 fn tfile(path: []const u8, text: []const u8, executable: bool) tangle.Tangled {
-    return .{ .path = path, .executable = executable, .text = text, .runs = &.{} };
+    return .{ .path = path, .executable = executable, .text = text, .runs = &.{}, .expansions = &.{} };
 }
 
 fn mapOf(a: Allocator, files: []const tangle.Tangled) ![]const u8 {
