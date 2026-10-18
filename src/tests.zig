@@ -6,4 +6,6 @@ test {
     _ = @import("docset.zig");
     _ = @import("resolve.zig");
     _ = @import("tangle.zig");
+    _ = @import("map.zig");
+    _ = @import("output.zig");
 }

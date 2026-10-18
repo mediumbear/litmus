@@ -160,7 +160,9 @@ const Checked = struct {
     }
 
     fn expectCount(self: Checked, n: usize) !void {
-        for (self.diags.list.items) |d| std.debug.print("  {d}: {s}\n", .{ d.line, d.message });
+        if (self.diags.list.items.len != n) {
+            for (self.diags.list.items) |d| std.debug.print("  {d}: {s}\n", .{ d.line, d.message });
+        }
         try t.expectEqual(n, self.diags.list.items.len);
     }
 };

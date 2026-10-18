@@ -231,7 +231,9 @@ const Result = struct {
     }
 
     fn expectNoDiags(self: Result) !void {
-        for (self.diags.list.items) |d| std.debug.print("  {d}: {s}\n", .{ d.line, d.message });
+        if (self.diags.list.items.len != 0) {
+            for (self.diags.list.items) |d| std.debug.print("  {d}: {s}\n", .{ d.line, d.message });
+        }
         try t.expectEqual(0, self.diags.list.items.len);
     }
 };
