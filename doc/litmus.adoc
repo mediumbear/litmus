@@ -1,78 +1,298 @@
-= Litmus =
-:source-language: odin
+= Litmus
+:toc: left
+:toclevels: 2
+:sectanchors:
 
-Litmus is a literal programming markup. It is exceptionally simple and is
-assumed to be embedded in some other documentation markup language, such as
-Markdown or AsciiDoc.
+Litmus turns a document into source code, and changes in the source code back into the document. The document is asciidoc, written to be read: prose that explains, with the code in the order that explains it best. Litmus adds one thing to asciidoc, the _Litmus command_: a line that starts with `…`.
 
-It is also assumed that the programmer will want to write code in the Litmus
-document as well as their code editor of choice, and supports real time updates
-to wherever the editing is taking plac. This way Litmus provides the best of both
-worlds.
+There are three operations:
 
-By default Litmus generates html with links to code references to quickly
-navigate the code. References can also be expanded inline.
+tangle:: Document to source files.
+untangle:: Changes in the source files back into the document.
+weave:: Document to a page for reading. Asciidoctor does most of this.
 
-Litmus is so simple that it can be described within a screen.
+== How Litmus is used
 
-It is quickest to explain with an example:
+Code is written and tested in the source files, as usual. Untangle carries the changes into the document, and the writer then writes prose for any new code. Tangle proves that the document still holds the code: tangling it must give the source files byte for byte.
 
-====
-… :file: hello.odin
+A person mostly reads the document, and edits its prose. Prose never affects the code.
 
-This is the main body of the program: +
-… body
-```
-fmt.println("Hello Litmus!")
-```
+This order suits an agent writing the code, which needs a compiler and tests in the loop, and a person who wants to read the result and understand the whole picture.
 
-A main procedure must hold the body. +
-… main
-```
-… header
+== An example
 
-main :: proc() {
-    … body
+....
+The program prints a greeting from its main function.
+
+… :file: hello.zig
+[source,zig]
+----
+… imports
+
+pub fn main() void {
+    … greet
 }
-```
+----
 
-The header defines the package and the import needed to print the message. +
-… header :file: hello.odin
-```
-package hello
+The greeting goes to standard error, which needs no setup:
 
-import "core:fmt"
-```
-====
+… greet :file: hello.zig
+[source,zig]
+----
+std.debug.print("Hello, Litmus!\n", .{});
+----
 
-`…` is called a _Litmus command_. It is always at the beginning of a line, but
-may have leading whitespace. When it appears in the documentation it is
-referred to as a _document command_. When it appears in a code excerpt, it is
-referred to as an _excerpt command_.
+… imports :file: hello.zig
+[source,zig]
+----
+const std = @import("std");
+----
+....
 
-`… :file: hello.odin` says that any code underneath is in the hello.odin file. This applies to all lines below the command until the end of the document, or until another command with a `:file:` attribute.
+Tangling it gives `hello.zig`:
 
-[%hardbreaks]
-Attributes are declared by surrounding some text with colons.
-There are different attributes for different purposes.
-The document command `... body` identifies an excerpt named _body_ that will follow on the next line.
-The excerpt command `... body` is a reference to another code excerpt. Any indenting before the command will be applied to the referenced code.
+[source,zig]
+----
+const std = @import("std");
 
-That is really all there is to it!
-
-When Litmus processes this document, it will
-produce this code in the file hello.odin:
-====
-```
-package hello
-
-import "core:fmt"
-
-main :: proc() {
-    fmt.println("Hello Litmus!")
+pub fn main() void {
+    std.debug.print("Hello, Litmus!\n", .{});
 }
-```
-====
+----
 
-Running Litmus in watch mode, edits to the source file will update this
-document. It can optionally update the final documentation as well for preview.
+Every label says which file its block lands in. On the page, each `…` line shows as a short plain paragraph above its block, so the document reads well even before weaving.
+
+== Terms
+
+Litmus command:: A line whose first character, after any spaces and tabs, is `…` (U+2026, the ellipsis), followed by a space.
+Code block:: An asciidoc listing block, opened by a line of four or more hyphens and closed by the same line. Or a fenced block, opened by `+```+` with an optional language, and closed by `+```+`.
+Document command:: A Litmus command outside code blocks. It labels the code block that follows it.
+Excerpt:: The code of all blocks labeled with the same name and the same file, joined in document order.
+Excerpt command:: A Litmus command inside a labeled code block. It stands for an excerpt, inserted at that point.
+File root:: The code of all blocks labeled `… :file: path` with no name, joined in document order. Each file is tangled from its root.
+Illustration:: A code block without a document command. It is shown, never tangled.
+Document set:: The documents named on the command line, and the documents they include, in reading order.
+
+== Syntax
+
+*Rule L1.* A document command is either `… name :file: path`, which labels a block of an excerpt, or `… :file: path`, which labels a block of a file root. Every document command names its file.
+
+* A name is the text before `:file:`, with surrounding spaces removed. It may contain spaces. It may not start with `:`.
+* A path is relative and uses `/`. It has no `..` parts and does not start with `/`.
+
+*Rule L2.* A document command labels the code block that starts after it. Between the two there may be only block attribute lines, such as `[source,zig]`, and a block title line, such as `.The dispatch loop`. A label must sit next to its block.
+
+*Rule L3.* An excerpt command is `… name`, alone on its line, inside a labeled block. Whatever comes before the `…` is the command's indent.
+
+*Rule L4.* In a labeled block, every Litmus command is an excerpt command. A line of code cannot start with `…`. The ellipsis character is rare in code.
+
+*Rule L5.* Litmus commands are ignored in illustrations, in literal blocks (`....`), comment blocks (`////`), passthrough blocks (`++++`), and on comment lines (`//`). That is how a document such as this one can show Litmus in its examples.
+
+*Rule L6.* An `include::path[]` line outside any block adds the included document to the document set at that point. Its path is relative to the including document. An `include::` inside a labeled block is an error: asciidoctor would paste the file's text into the block on the page, which tangle does not do.
+
+*Rule L7.* A line ends at `\n`. Everything else, including a `\r`, is part of the line.
+
+*Rule L8.* A document may set a directory for its paths with the attribute entry `:litmus-dir: src/core`, on a line of its own, outside blocks, before its first document command. Every `:file:` path in that document is then taken inside that directory: `… :file: vm.zig` means `src/core/vm.zig`. It applies to that document only, not to the documents it includes, so a block's file never depends on where the block sits. The directory follows the same rules as a path in L1.
+
+*Rule L9.* A file-root label may end with `:executable:`, as in `… :file: scripts/build.sh :executable:`. The file is then written with permission to run it. One such label is enough for the file.
+
+A listing block closes only at a line equal to the one that opened it. Code that contains a line of four hyphens, such as a Lua comment, goes in a block opened with five or more.
+
+== Tangle
+
+*Rule T1.* A file's text is its file root, with every excerpt command expanded.
+
+*Rule T2.* An excerpt command is replaced by its excerpt's lines, each expanded in turn, each with the command's indent put in front. Empty lines stay empty.
+
+*Rule T3.* Every line of a file ends with `\n`, the last one included.
+
+*Rule T4.* Tangle writes a file only when its text changed, so builds and watchers see only real changes. It writes each file whole, under a temporary name, and then renames it, so nothing ever reads half a file.
+
+*Rule T5.* Tangle never deletes a file. A file that the previous map lists but the documents no longer tangle is reported, and left where it is.
+
+*Rule T6.* Tangle never overwrites a change it did not make. Before writing a file that exists, it compares the file with the hash the map recorded when tangle last wrote it. If they differ, the file was changed since, and tangle reports it and writes nothing at all. A file the map does not list is treated the same way, unless it already equals its tangled text. `--force` overwrites anyway.
+
+T6 protects the usual case: someone edits a tangled file, the change is not in the documents yet, and tangle runs. Without T6 the edit would be lost.
+
+== Checks
+
+Each of these is an error, reported as `document:line: message`. If there is any error, tangle writes nothing.
+
+*Check C1.* An excerpt command names an excerpt that has no blocks in the file being tangled. This includes an excerpt labeled with a different file.
+
+*Check C2.* An excerpt is not used by any excerpt command.
+
+*Check C3.* An excerpt is used by more than one excerpt command.
+
+*Check C4.* An excerpt contains itself, directly or through other excerpts.
+
+*Check C5.* A document command is not followed by a code block (L2).
+
+*Check C6.* A code block is still open at the end of its document.
+
+*Check C7.* A path breaks L1 or L8, or an `include::` breaks L6. A path may also not contain a tab, since the map separates its fields with tabs.
+
+*Check C8.* A `:litmus-dir:` comes after a document command, or appears twice in one document.
+
+*Check C9.* `:executable:` is on an excerpt's label rather than a file root's.
+
+*Check C10.* A document includes itself, directly or through other documents, is in the document set twice, or names a document that does not exist.
+
+*Check C11.* A document command has no `:file:`, or has an attribute other than `:file:` and `:executable:`.
+
+C2 and C3 together mean that every excerpt is used exactly once. Then every line of every file comes from exactly one line of the document set, and every line of labeled code lands in exactly one place. Tangle can be run backwards, which is what makes untangle exact.
+
+Names belong to their file. Two files can each have an excerpt called `body`. An excerpt command in a file's code only finds excerpts labeled with that file.
+
+Since every label names its file, a reader or an agent knows where a block lands from its label alone, without tracing excerpt commands back to a root.
+
+== The Map
+
+Tangle writes `.litmus/map` in the output directory. For every line of every tangled file, it says where the line came from, and it records what tangle last wrote (T6). The map is not committed. Losing it loses nothing: tangle then accepts a file that equals its tangled text as unchanged.
+
+The map is text. The first line is `litmus map 1`. Each file starts with a line of three fields separated by tabs: `file`, its path, and the SHA-256 of the text tangle wrote, in lowercase hexadecimal. Then one line per _run_, a group of consecutive lines of the file that come from consecutive lines of one block. A run has six fields, separated by tabs:
+
+[cols="1,3",options="header"]
+|===
+| Field | Meaning
+| line | The run's first line in the file, counting from 1.
+| count | How many lines the run has.
+| document | The document the run comes from.
+| document line | The line of the document where the run starts.
+| indent | How many bytes were put in front of each non-empty line (T2).
+| excerpt | The excerpt's name, or `:file:` for the file root.
+|===
+
+The map for the example, if its document is `hello.adoc`:
+
+....
+litmus map 1
+file	hello.zig	2bc975ea988a6520d4c5937fbec6d64a98ce153bb2dc852c50affe981da286c2
+1	1	hello.adoc	24	0	imports
+2	2	hello.adoc	7	0	:file:
+4	1	hello.adoc	18	4	greet
+5	1	hello.adoc	10	0	:file:
+....
+
+== Commands
+
+`litmus tangle [-o DIR] [--force] DOCUMENT...`::
+Tangles the document set into files under `DIR` (the current directory by default), and writes the map. `--force` overwrites files changed since the last tangle (T6).
+
+`litmus check [-o DIR] DOCUMENT...`::
+Tangles in memory and compares the result with the files under `DIR`. For each file that differs or is missing, it prints the first line that differs and where that line is in the document. It exits with 1 if any file differs. This is the round-trip check, run after every change.
+
+`litmus where FILE:LINE`::
+Reads the map and prints the document line that `FILE:LINE` came from, and its excerpt. This turns a compiler error into a place in the document.
+
+`litmus guide`::
+Prints the guide for agents, below.
+
+`litmus init [-o DIR] DOCUMENT...`::
+Prepares the project in the current directory for agents. See <<init>>.
+
+Document paths are recorded in the map as they were given, so Litmus is run from the same directory each time, normally the project's root.
+
+[[guide]]
+== The Guide
+
+Agents learn how to work in a project that uses Litmus from `litmus guide`. The text comes with the installed Litmus, so it always matches the version in use. `litmus guide` prints exactly this:
+
+....
+Litmus: a guide for agents
+
+Some files in this project are tangled. Their code lives in documents, asciidoc or
+Markdown, that explain it. A tangled file must always equal what its documents
+tangle to. AGENTS.md gives this project's commands for tangle and check.
+
+Finding your way
+- .litmus/map lists every tangled file: each line starting with "file" names one.
+- `litmus where FILE:LINE` prints the document line, and the excerpt, that a line
+  of a tangled file came from. It works for lines in compiler errors too.
+- A document labels each block of code with the file it lands in:
+  `… name :file: path` for an excerpt, `… :file: path` for the start of a file.
+  Inside a block, a line `… name` inserts that excerpt, at that indent.
+
+Changing code
+1. Edit the tangled file and test it as usual.
+2. Make the same change in the document's block: `litmus where` finds it.
+3. Put new code in a new block, labeled with its name and file, inserted by
+   exactly one `… name` line, with prose before it saying what it does and why.
+4. Run the check command from AGENTS.md. The change is done only when it passes.
+
+Never
+- edit .litmus/map;
+- run `litmus tangle --force` unless the user asks: it overwrites edits in
+  tangled files;
+- start a line of code with `…` (U+2026);
+- leave a tangled file changed without the same change in its document.
+
+If tangle refuses because a file changed since it was tangled, the change is not
+in the documents yet: carry it over (step 2), then check.
+....
+
+[[init]]
+== Init
+
+`litmus init [-o DIR] DOCUMENT...` sets up the project in the current directory so that agents find the guide. It takes the same `-o` and documents as tangle.
+
+*Rule I1.* In `AGENTS.md` it adds this paragraph, or replaces the one a previous init added, found by its two comment lines:
+
+....
+<!-- litmus -->
+This project uses Litmus: some source files are tangled from documents that
+explain them. Run `litmus guide` before changing any file listed in
+DIR/.litmus/map. Tangle with `litmus tangle -o DIR DOCUMENT...`, and make sure
+`litmus check -o DIR DOCUMENT...` passes before finishing.
+<!-- /litmus -->
+....
+
+`DIR` and `DOCUMENT...` are filled in from the command. `litmus` is replaced by the path init was run with, when that path contains a `/`, so the line works when Litmus is not on the `PATH`.
+
+*Rule I2.* In `CLAUDE.md`, the file Claude Code reads, it adds a line `@AGENTS.md`, which imports `AGENTS.md`, unless a line already does.
+
+*Rule I3.* In `.gitignore` it adds `DIR/.litmus/`, or `.litmus/` when `DIR` is the current directory, unless a line already says so.
+
+*Rule I4.* Init creates any of these files that are missing, changes nothing else, and prints each change it makes. Running it twice changes nothing the second time.
+
+== Untangle
+
+Untangle comes next. Its rules are written here so that tangle and the map serve it.
+
+*Rule U1.* The base is the document set tangled in memory. If the base equals the source files, there is nothing to do.
+
+*Rule U2.* Each file of the base is compared with the source file, line by line.
+
+*Rule U3.* A changed or removed line is changed or removed at the document line it came from.
+
+*Rule U4.* A line added between two lines of the same run goes into that block. A line added where two runs meet goes into the outer block, the one holding the excerpt command, next to that command. It is listed in the report, since the writer may want it elsewhere.
+
+*Rule U5.* A changed or added line inside an excerpt that no longer starts with the excerpt command's indent is reported, not guessed.
+
+*Rule U6.* Untangle reports every block that grew, as _needs prose_. That list is the writer's work before a change is done.
+
+*Rule U7.* Git decides the direction. If only the source files differ from `HEAD`, untangle. If only the code in the documents differs, tangle. If both differ, stop and report the excerpts involved. Prose changes never count.
+
+*Rule U8.* A source file that is not in the map is reported. Untangle does not invent a document for it.
+
+== Watch
+
+Later. A watcher runs U7 whenever a document or a source file is saved.
+
+== Weave
+
+Later. Asciidoctor with a small extension: a document command becomes an anchor and a note of the file its block lands in. An excerpt command becomes a link to its excerpt, and can be expanded in place.
+
+== Markdown
+
+A document whose name ends in `.md` is read as Markdown. The commands and the rules for tangling are the same. What differs is how blocks are found.
+
+*Rule M1.* A code block is a fenced block: opened by three or more backticks or tildes, with an optional language, and closed by a line of the same character at least as long. Indented code is not a code block for Litmus.
+
+*Rule M2.* A document command labels the fenced block on the next line. Markdown has no attribute or title lines to put between them.
+
+*Rule M3.* Litmus commands are ignored in unlabeled fenced blocks and inside HTML comments.
+
+*Rule M4.* Markdown has no `include::`. Each Markdown document is named on the command line.
+
+*Rule M5.* A Markdown document sets its directory with a line `<!-- :litmus-dir: src/core -->`, under the same rule as L8.
