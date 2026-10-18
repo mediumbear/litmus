@@ -17,6 +17,6 @@ for g in asciidoctor rouge; do
 done
 
 for f in litmus.adoc implementation.adoc; do
-  [ -f "$f" ] && asciidoctor --failure-level WARN -D build "$f" && echo "Wrote doc/build/${f%.adoc}.html"
+  [ -f "$f" ] && asciidoctor --failure-level WARN -r ./litmus-weave.rb -D build "$f" && echo "Wrote doc/build/${f%.adoc}.html"
 done
 true
