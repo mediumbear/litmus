@@ -64,6 +64,8 @@ These are the classes of line. Most are what they say. Two deserve a note.
 
 Attribute and title lines (`[source,zig]`, `.The loop`) are the only lines allowed between a label and its block, so they get kinds of their own. Markdown has neither, and never produces them.
 
+Three kinds are Litmus's own attribute entries: the directory of the document's files (L8), its style file (L10), and the mark of a companion document (L11).
+
 … Kind :file: scan.zig
 [source,zig]
 ----
@@ -80,6 +82,10 @@ pub const Kind = enum {
     include,
     /// A `:litmus-dir:` entry (L8, M5).
     dir,
+    /// A `:litmus-style:` entry (L10).
+    style,
+    /// A `:litmus-companion:` entry (L11).
+    companion,
     /// The line that opens a code block.
     open,
     /// The line that closes a code block.
@@ -280,7 +286,7 @@ if (std.mem.startsWith(u8, line, "```") and std.mem.indexOfScalar(u8, line[3..],
 }
 ----
 
-What is left is classified by how the line begins. A command comes first, since it is the line Litmus exists for. Then `include::`, the directory entry, an attribute line in square brackets, and a title, which is a full stop followed by something that is not a full stop or a space (so `..` and `. item` are not titles).
+What is left is classified by how the line begins. A command comes first, since it is the line Litmus exists for. Then `include::`, the three entries, an attribute line in square brackets, and a title, which is a full stop followed by something that is not a full stop or a space (so `..` and `. item` are not titles).
 
 … asciidoc, the other lines :file: scan.zig
 [source,zig]
@@ -288,6 +294,8 @@ What is left is classified by how the line begins. A command comes first, since 
 if (commandOf(line) != null) return .command;
 if (std.mem.startsWith(u8, line, "include::")) return .include;
 if (std.mem.startsWith(u8, line, ":litmus-dir:")) return .dir;
+if (std.mem.startsWith(u8, line, ":litmus-style:")) return .style;
+if (std.mem.startsWith(u8, line, ":litmus-companion:")) return .companion;
 if (line.len >= 2 and line[0] == '[' and line[line.len - 1] == ']') return .attribute;
 if (line.len >= 2 and line[0] == '.' and line[1] != '.' and line[1] != ' ' and line[1] != '\t') return .title;
 return .prose;
@@ -336,13 +344,15 @@ if (isFence(line)) |fence| {
 }
 ----
 
-Then a command, a directory entry, and the start of an HTML comment. A comment that opens and closes on one line leaves the scanner in prose, and a line that starts with the comment is skipped. A comment that begins after some text leaves the line as prose, since the text may be real.
+Then a command, the three entries, and the start of an HTML comment. A comment that opens and closes on one line leaves the scanner in prose, and a line that starts with the comment is skipped. A comment that begins after some text leaves the line as prose, since the text may be real.
 
 … Markdown, the other lines :file: scan.zig
 [source,zig]
 ----
 if (commandOf(line) != null) return .command;
 if (markdownDir(line) != null) return .dir;
+if (markdownEntry(line, ":litmus-style:") != null) return .style;
+if (markdownEntry(line, ":litmus-companion:") != null) return .companion;
 if (std.mem.indexOf(u8, line, "<!--")) |at| {
     const rest = line[at + 4 ..];
     if (std.mem.indexOf(u8, rest, "-->") == null) self.state = .html_comment;
@@ -384,23 +394,33 @@ fn isFence(line: []const u8) ?Fence {
 }
 ----
 
-The two spellings of the directory entry (L8, M5) are read here. The Markdown one hides in an HTML comment, `<!-- :litmus-dir: src/core -->`, so that it does not show on the page.
+The entries have two spellings, read here. The Markdown one hides in an HTML comment, `<!-- :litmus-dir: src/core -->`, so that it does not show on the page. The directory (L8, M5) came first; the style file (L10) and the companion mark (L11) are read the same way, so the functions take the entry's name.
 
 … directories :file: scan.zig
 [source,zig]
 ----
 /// The directory in a line `<!-- :litmus-dir: src/core -->` (M5).
 pub fn markdownDir(line: []const u8) ?[]const u8 {
+    return markdownEntry(line, ":litmus-dir:");
+}
+
+/// The value of an entry such as `<!-- :litmus-style: style.md -->` in Markdown.
+pub fn markdownEntry(line: []const u8, name: []const u8) ?[]const u8 {
     const body = std.mem.trim(u8, line, " \t");
     if (!std.mem.startsWith(u8, body, "<!--") or !std.mem.endsWith(u8, body, "-->")) return null;
     const inner = std.mem.trim(u8, body[4 .. body.len - 3], " \t");
-    if (!std.mem.startsWith(u8, inner, ":litmus-dir:")) return null;
-    return std.mem.trim(u8, inner[":litmus-dir:".len..], " \t");
+    if (!std.mem.startsWith(u8, inner, name)) return null;
+    return std.mem.trim(u8, inner[name.len..], " \t");
 }
 
 /// The directory in an asciidoc line `:litmus-dir: src/core` (L8).
 pub fn asciidocDir(line: []const u8) []const u8 {
-    return std.mem.trim(u8, line[":litmus-dir:".len..], " \t");
+    return asciidocEntry(line, ":litmus-dir:");
+}
+
+/// The value of an asciidoc entry such as `:litmus-style: style.md`.
+pub fn asciidocEntry(line: []const u8, name: []const u8) []const u8 {
+    return std.mem.trim(u8, line[name.len..], " \t");
 }
 ----
 
@@ -557,7 +577,7 @@ test "C6: a block still open at the end" {
 }
 ----
 
-The Markdown tests cover the fences (M1), HTML comments (M3), the lack of `include::` (M4) and the directory comment (M5).
+The Markdown tests cover the fences (M1), HTML comments (M3), the lack of `include::` (M4), the directory comment (M5), and the style and companion entries in both formats (L10, L11).
 
 … Markdown tests :file: scan.zig
 [source,zig]
@@ -606,6 +626,13 @@ test "M3: commands are ignored in HTML comments" {
 
 test "M4: Markdown has no include" {
     try expectKinds(.markdown, "include::a.md[]\n:litmus-dir: x\n", &.{ .prose, .prose });
+}
+
+test "L10, L11: the style and companion entries" {
+    try expectKinds(.asciidoc, ":litmus-style: style.md\n:litmus-companion:\n:litmus-other: x\n", &.{ .style, .companion, .prose });
+    try expectKinds(.markdown, "<!-- :litmus-style: ../s.md -->\n<!-- :litmus-companion: -->\n", &.{ .style, .companion });
+    try std.testing.expectEqualStrings("../s.md", markdownEntry("<!-- :litmus-style:  ../s.md -->", ":litmus-style:").?);
+    try std.testing.expectEqualStrings("s.md", asciidocEntry(":litmus-style:  s.md ", ":litmus-style:"));
 }
 
 test "M5: the directory line" {

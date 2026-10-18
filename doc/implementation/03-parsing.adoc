@@ -57,7 +57,7 @@ const Command = types.Command;
 const Diagnostics = types.Diagnostics;
 ----
 
-Its result has two parts. A document's blocks are in order, and so are its `include::` lines, each with the line it is on. The document set (chapter 4) merges the two, so that an included document's blocks land at the include's place in the reading order (L6).
+Its result has four parts. A document's blocks are in order, and so are its `include::` lines, each with the line it is on. Then the style file the document names, if any (L10), with its line for a message, and whether the document is a companion (L11). The document set (chapter 4) merges the two, so that an included document's blocks land at the include's place in the reading order (L6).
 
 `blank` is what separates the words of a label. It includes `\r`, so that a document with Windows line ends does not leave a carriage return on a name.
 
@@ -73,6 +73,10 @@ pub const Include = struct {
 pub const Parsed = struct {
     blocks: []const Block,
     includes: []const Include,
+    /// The style file the document names (L10), as written, with its line.
+    style: ?Include = null,
+    /// Whether the document says `:litmus-companion:` (L11).
+    companion: bool = false,
 };
 
 const blank = " \t\r";
@@ -237,22 +241,24 @@ pub fn parse(arena: Allocator, doc_index: u32, doc: Document, diags: *Diagnostic
             … a block opens
             … a line of code
             … a block closes
-            .prose, .skip, .command, .include, .dir => {},
+            .prose, .skip, .command, .include, .dir, .style, .companion => {},
         }
         … a label waits for its block
         switch (kind) {
             … a document command
             … an include line
             … a directory entry
+            … a style entry
+            … the companion mark
             else => {},
         }
     }
     … the end of the document
-    return .{ .blocks = try blocks.toOwnedSlice(arena), .includes = try includes.toOwnedSlice(arena) };
+    return .{ .blocks = try blocks.toOwnedSlice(arena), .includes = try includes.toOwnedSlice(arena), .style = style, .companion = companion };
 }
 ----
 
-The directory entry applies to the whole document, so it is remembered (L8). `dir_seen` and `command_seen` are for C8: the entry may come once, and before the first document command.
+The directory entry applies to the whole document, so it is remembered (L8), and so are the style (L10) and the companion mark (L11). `dir_seen` and `command_seen` are for C8: an entry may come once, and before the first document command.
 
 A document command waits in `pending` until the next block opens and takes it. While a block is open, `block_label` holds its label, or null for an illustration, and `commands` collects its excerpt commands.
 
@@ -262,6 +268,8 @@ A document command waits in `pending` until the next block opens and takes it. W
 var litmus_dir: []const u8 = "";
 var dir_seen = false;
 var command_seen = false;
+var style: ?Include = null;
+var companion = false;
 
 var pending: ?Label = null;
 var block_label: ?Label = null;
@@ -381,6 +389,40 @@ A directory entry sets the directory for the paths that follow. It is C8 after t
         litmus_dir = try normalizePath(arena, value);
     }
     dir_seen = true;
+},
+----
+
+A style entry (L10) follows the same rules of place as the directory: before the first document command, and once (C8). Its path is kept as written. It is relative to the document, and the document set resolves it, since only the set knows the document's directory and what it includes.
+
+… a style entry :file: parse.zig
+[source,zig]
+----
+.style => {
+    const value = if (doc.format == .markdown) scan.markdownEntry(line, ":litmus-style:").? else scan.asciidocEntry(line, ":litmus-style:");
+    if (command_seen) {
+        try diags.add(doc_index, n, "C8: :litmus-style: comes after a document command", .{});
+    } else if (style != null) {
+        try diags.add(doc_index, n, "C8: :litmus-style: appears twice", .{});
+    } else if (value.len == 0 or std.mem.indexOfScalar(u8, value, '\t') != null) {
+        try diags.add(doc_index, n, "C7: the style needs a path without tabs", .{});
+    } else {
+        style = .{ .line = n, .path = value };
+    }
+},
+----
+
+The companion mark (L11) has no value. It may come once, before the first document command.
+
+… the companion mark :file: parse.zig
+[source,zig]
+----
+.companion => {
+    if (command_seen) {
+        try diags.add(doc_index, n, "C8: :litmus-companion: comes after a document command", .{});
+    } else if (companion) {
+        try diags.add(doc_index, n, "C8: :litmus-companion: appears twice", .{});
+    }
+    companion = true;
 },
 ----
 
@@ -569,7 +611,7 @@ test "C6: a block open at the end of the document" {
 }
 ----
 
-Includes (L6, C7), the directory entry (L8, M5, C8), paths (C7), and a document with many mistakes, where all of them have to be reported.
+Includes (L6, C7), the directory entry (L8, M5, C8), the style and the companion mark (L10, L11, C8), paths (C7), and a document with many mistakes, where all of them have to be reported.
 
 … document tests :file: parse.zig
 [source,zig]
@@ -614,6 +656,28 @@ test "C8: a directory after a document command, or twice" {
     // A directory inside a block is code, not an entry.
     try (try run(a, .asciidoc, "… :file: x\n----\n:litmus-dir: d\n----\n:litmus-dir: e\n")).expectDiag(5, "C8");
     try (try run(a, .asciidoc, "----\n:litmus-dir: d\n----\n:litmus-dir: e\n")).expectNoDiags();
+}
+
+test "L10, L11, C8: the style and the companion mark, before the first document command, once" {
+    var arena_state = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const r = try run(a, .asciidoc, ":litmus-style: ../style.md\n:litmus-companion:\n… :file: x\n----\n----\n");
+    try r.expectNoDiags();
+    try t.expectEqualStrings("../style.md", r.parsed.style.?.path);
+    try t.expectEqual(1, r.parsed.style.?.line);
+    try t.expect(r.parsed.companion);
+    try (try run(a, .asciidoc, "… :file: x\n----\n----\n:litmus-style: s.md\n")).expectDiag(4, "C8");
+    try (try run(a, .asciidoc, ":litmus-style: s.md\n:litmus-style: t.md\n")).expectDiag(2, "C8");
+    try (try run(a, .asciidoc, "… :file: x\n----\n----\n:litmus-companion:\n")).expectDiag(4, "C8");
+    try (try run(a, .asciidoc, ":litmus-style:\n")).expectDiag(1, "C7");
+    const md = try run(a, .markdown, "<!-- :litmus-style: s.md -->\n<!-- :litmus-companion: -->\n");
+    try md.expectNoDiags();
+    try t.expect(md.parsed.companion);
+    // Neither is an entry inside a block.
+    const inside = try run(a, .asciidoc, "… :file: x\n----\n:litmus-style: s.md\n----\n");
+    try inside.expectNoDiags();
+    try t.expect(inside.parsed.style == null);
 }
 
 test "C7: paths" {

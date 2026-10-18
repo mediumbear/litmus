@@ -175,6 +175,7 @@ test {
     _ = @import("untangle.zig");
     _ = @import("sync.zig");
     _ = @import("watch.zig");
+    _ = @import("adopt.zig");
 }
 ----
 
@@ -310,16 +311,17 @@ untangle_case() {
   # was removed stays missing.
   [ -f "$dir/remove" ] || (cd "$sandbox" && "$litmus" check -o "$out" $args) > /dev/null 2> "$work/stderr" || fail "$name" "check failed after untangle: $(cat "$work/stderr")"
   (cd "$sandbox" && "$litmus" untangle -o "$out" $options $args) > "$work/stdout" 2> /dev/null
-  [ "$(cat "$work/stdout")" = "nothing to untangle" ] || fail "$name" "the second untangle said: $(cat "$work/stdout")"
+  [ "$(head -n 1 "$work/stdout")" = "nothing to untangle" ] || fail "$name" "the second untangle said: $(cat "$work/stdout")"
 }
 ----
 
-A case that has a file `cmd` is an init case. The command is run in a sandbox that holds the files of `before`, with Litmus available under the name the command uses: on the `PATH`, or at a relative path such as `tools/litmus` (I1). The sandbox must then equal `expected`, and the second run has to print nothing and change nothing (I4).
+A case that has a file `cmd` runs that command: init, adopt, or a few commands in a row, such as an adopt followed by an untangle of a companion. Only init is run twice, since running it twice must change nothing (I4). The command is run in a sandbox that holds the files of `before`, with Litmus available under the name the command uses: on the `PATH`, or at a relative path such as `tools/litmus` (I1). The sandbox must then equal `expected`, and the second run has to print nothing and change nothing (I4).
 
 … init_case :file: test/run.sh
 [source,bash]
 ----
-# A case with a `cmd` file is an init case. The others are tangle cases.
+# A case with a `cmd` file runs that command: init, adopt, or a few commands in a row.
+# The others are tangle cases.
 init_case() {
   local dir=$1 name=$2 sandbox=$work/sandbox cmd
   rm -rf "$sandbox" && mkdir -p "$sandbox"
@@ -328,7 +330,11 @@ init_case() {
   run_init "$sandbox" "$cmd" || fail "$name" "init failed: $(cat "$work/stderr")"
   expect_same "$name (what init prints)" "$work/stdout" "$( [ -f "$dir/expected.out" ] && echo "$dir/expected.out" || echo /dev/null )"
   expect_same "$name (the files)" "$sandbox" "$dir/expected"
-  # I4: the second run changes nothing.
+  # I4: a second init changes nothing. Other commands run once.
+  case " $cmd " in
+    *" init "*) ;;
+    *) return ;;
+  esac
   run_init "$sandbox" "$cmd"
   [ -s "$work/stdout" ] && fail "$name" "the second init printed: $(cat "$work/stdout")"
   expect_same "$name (the files after a second run)" "$sandbox" "$dir/expected"

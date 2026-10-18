@@ -887,7 +887,7 @@ const MemoryFs = struct {
 
 === The check (U9)
 
-`verify` is what makes untangle trustworthy. It renders the edited documents, loads them as a document set, resolves and tangles them, and compares each tangled file with the one on disk. If anything differs, it returns a message with the first differing line. If the edited documents no longer parse, or fail a check, that is the message.
+`verify` is what makes untangle trustworthy. Adopt uses it too, to prove a new document before writing it. It renders the edited documents, loads them as a document set, resolves and tangles them, and compares each tangled file with the one on disk. If anything differs, it returns a message with the first differing line. If the edited documents no longer parse, or fail a check, that is the message.
 
 A line of the file that becomes `----`, or a line that turns into an excerpt command, breaks the document, and this is where it shows.
 
@@ -899,6 +899,14 @@ A line of the file that becomes `----`, or a line that turns into an excerpt com
 /// that is not. `roots` are the documents named on the command line.
 pub fn verify(arena: Allocator, docs: []const Document, roots: []const []const u8, files: []const FileText) !?[]const u8 {
     … verify, the edited documents as a set
+    // Style never changes code (L10), and the style files are not in memory, so C12 does not count here.
+    var kept: usize = 0;
+    for (diags.list.items) |d| {
+        if (std.mem.startsWith(u8, d.message, "C12:")) continue;
+        diags.list.items[kept] = d;
+        kept += 1;
+    }
+    diags.list.items.len = kept;
     if (diags.list.items.len == 0) {
         const resolved = try resolve_mod.resolve(arena, set.docs, set.blocks, &diags);
         if (diags.list.items.len == 0) {
@@ -913,7 +921,7 @@ pub fn verify(arena: Allocator, docs: []const Document, roots: []const []const u
 }
 ----
 
-The edited documents are rendered and loaded as a set, in memory.
+The edited documents are rendered and loaded as a set, in memory. The style files are not in memory, so a missing style file (C12) is not counted here: style never changes code (L10), and the normal load reports it.
 
 … verify, the edited documents as a set :file: untangle.zig
 [source,zig]

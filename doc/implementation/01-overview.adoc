@@ -15,8 +15,9 @@ document text
     resolve   (chapter 5)   group blocks into files and excerpts, and run the checks
     tangle    (chapter 6)   expand each file and record where its lines came from
     map, output (chapter 7) write the files and the map, without losing anyone's work
-    commands  (chapter 8)   tangle, check, where, guide, init, untangle and sync
+    commands  (chapter 8)   tangle, check, where, guide, init, untangle, sync, watch, style
     untangle  (chapter 9)   carry edits of the files back into the documents
+    adopt     (chapter 8)   a new document from files that have none
 ....
 
 The spec, `doc/litmus.adoc`, says what Litmus does. This book says how. Every behaviour traces to a rule of the spec, and the tests in this book name the rule they check: L for the language, T for tangle, C for the checks, M for Markdown and I for init. When the code needs something the spec does not say, the spec changes first.
@@ -86,7 +87,7 @@ Documents are either asciidoc or Markdown. The scanner defines the format, and t
 pub const Format = @import("scan.zig").Format;
 ----
 
-A `Document` is a path, a format, and the document's lines. Its `dir` is the directory that contains it, which is where `include::` paths start (L6). Not to be confused with `:litmus-dir:`, which sets where tangled files go (L8). `final_newline` remembers whether the text ended with a newline. The lines alone cannot say, and untangle must write a document back exactly as it was.
+A `Document` is a path, a format, and the document's lines. Its `dir` is the directory that contains it, which is where `include::` paths start (L6). Not to be confused with `:litmus-dir:`, which sets where tangled files go (L8). `final_newline` remembers whether the text ended with a newline. `style` is the style file that applies to the document (L10), its own or one it inherits, and `companion` says whether the document marks itself a companion of its code (L11). The lines alone cannot say, and untangle must write a document back exactly as it was.
 
 … Document :file: types.zig
 [source,zig]
@@ -100,6 +101,11 @@ pub const Document = struct {
     dir: []const u8,
     /// Whether the text ended with `\n`, so that the document can be written back as it was.
     final_newline: bool = true,
+    /// The style file that applies to the document, its own or the one of the document that
+    /// includes it (L10), as a path from the current directory.
+    style: ?[]const u8 = null,
+    /// Whether the document says `:litmus-companion:` (L11).
+    companion: bool = false,
 };
 ----
 
