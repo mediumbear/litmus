@@ -170,6 +170,24 @@ module LitmusWeave
       </script>
     HTML
 
+    # V1: the `key: value` lines of the `## Settings` section of the document's style file.
+    def settings(doc)
+      style = doc.attr('litmus-style')
+      return {} unless style
+      path = File.join(doc.attr('docdir') || '.', style)
+      return {} unless File.exist?(path)
+      result = {}
+      inside = false
+      File.readlines(path, chomp: true).each do |line|
+        if line.start_with?('## ')
+          inside = line.strip == '## Settings'
+        elsif inside && (m = line.match(/\A\s*([\w-]+)\s*:\s*(.*?)\s*\z/))
+          result[m[1]] = m[2]
+        end
+      end
+      result
+    end
+
     def process(doc, output)
       listings = Tree.listings
       pattern = /(<div class="listingblock[^"]*\blm-(\d+)\b[^"]*">\s*<div class="content">\s*<pre[^>]*>(?:<code[^>]*>)?)(.*?)((?:<\/code>)?<\/pre>)/m
@@ -194,12 +212,13 @@ module LitmusWeave
       head = STYLE + SPY
       # Diagrams written as `<pre class="mermaid">` in a passthrough block are drawn in the
       # browser by Mermaid.
+      theme = (settings(doc)['mermaid-theme'] || 'neutral').gsub(/[^a-z-]/, '')
       if output.include?('class="mermaid"')
         head += <<~HTML
           <style>pre.mermaid { background: none; border: none; text-align: center; }</style>
           <script type="module">
           import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.esm.min.mjs';
-          mermaid.initialize({ startOnLoad: true, theme: 'neutral' });
+          mermaid.initialize({ startOnLoad: true, theme: '#{theme}' });
           </script>
         HTML
       end

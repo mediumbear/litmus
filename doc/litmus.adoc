@@ -249,6 +249,8 @@ Tangle with `litmus tangle -o DIR DOCUMENT...`, and make sure
 
 *Rule I3.* In `.gitignore` it adds `DIR/.litmus/`, or `.litmus/` when `DIR` is the current directory, unless a line already says so.
 
+*Rule I5.* It writes the skill `litmus-document`, which tells an agent how to make a literate document for existing code (see <<adopt>>), to `.claude/skills/litmus-document/SKILL.md`, where Claude Code finds it. The skill comes with Litmus, so an older copy is replaced.
+
 *Rule I4.* Init creates any of these files that are missing, changes nothing else, and prints each change it makes. Running it twice changes nothing the second time.
 
 [[untangle]]

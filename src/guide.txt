@@ -21,6 +21,9 @@ Changing code
    and file and inserted by exactly one `… name` line.
 4. Run the check command from AGENTS.md. The change is done only when it passes.
 
+Before you write prose for a document, run `litmus style DOCUMENT` and follow
+the style file it names. Every `next:` line that Litmus prints says what to do.
+
 If `litmus watch` is running in this project, it does step 2 by itself whenever a
 file is saved. Read its output: it still lists the blocks that need prose.
 
@@ -30,6 +33,12 @@ Never
   they skip the protection of edits;
 - start a line of code with `…` (U+2026);
 - leave a tangled file changed without the same change in its document.
+
+Documents for existing code
+`litmus adopt` makes a document from files that have none, split at their
+declarations. The steps are in the skill litmus-document, which `litmus init`
+installs: adopt, check, propose an outline and wait for the user, write each
+chapter in the style of the brief, check after each, and render.
 
 If untangle reports a line it cannot place, the line lost the indent of its
 excerpt: fix it in the tangled file and run untangle again. If it says that the

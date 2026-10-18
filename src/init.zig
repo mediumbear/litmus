@@ -14,6 +14,10 @@ pub const Args = struct {
     documents: []const []const u8,
 };
 
+/// I5: the skill for making documents, as it comes with Litmus, and where init puts it.
+pub const skill_text = @embedFile("skill.md");
+pub const skill_path = ".claude/skills/litmus-document/SKILL.md";
+
 const start_marker = "<!-- litmus -->";
 const end_marker = "<!-- /litmus -->";
 
@@ -139,6 +143,12 @@ pub fn run(io: Io, arena: Allocator, args: Args, out: *Io.Writer, err: *Io.Write
         const text = updated orelse continue;
         try output.writeAtomic(io, cwd, name, text, false);
         try out.print("{s} {s}\n", .{ if (existing == null) "created" else "updated", name });
+    }
+    // I5: the skill is Litmus's own, so an older one is replaced.
+    const existing_skill = try output.readOrNull(io, arena, cwd, skill_path);
+    if (existing_skill == null or !std.mem.eql(u8, existing_skill.?, skill_text)) {
+        try output.writeAtomic(io, cwd, skill_path, skill_text, false);
+        try out.print("{s} {s}\n", .{ if (existing_skill == null) "created" else "updated", skill_path });
     }
     return if (failed) 1 else 0;
 }
