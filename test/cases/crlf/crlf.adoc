@@ -1,0 +1,13 @@
+L7: a carriage return is part of its line.
+
+… :file: crlf.txt
+----
+first
+  … body
+last
+----
+
+… body :file: crlf.txt
+----
+second
+----

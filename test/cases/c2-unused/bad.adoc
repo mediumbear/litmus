@@ -1,0 +1,9 @@
+… :file: a.txt
+----
+x
+----
+
+… spare :file: a.txt
+----
+y
+----

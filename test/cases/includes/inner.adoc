@@ -1,0 +1,4 @@
+… two :file: all.txt
+----
+two (inner)
+----

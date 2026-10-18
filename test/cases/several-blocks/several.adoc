@@ -1,0 +1,25 @@
+An excerpt of several blocks is joined in document order.
+
+… :file: s.txt
+----
+a
+… e
+b
+----
+
+… e :file: s.txt
+----
+1
+----
+
+Some prose between.
+
+… :file: s.txt
+----
+c
+----
+
+… e :file: s.txt
+----
+2
+----

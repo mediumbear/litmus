@@ -1,0 +1,15 @@
+… :file: bin/run.sh :executable:
+----
+#!/bin/sh
+… body
+----
+
+… body :file: bin/run.sh
+----
+echo run
+----
+
+… :file: bin/plain.sh
+----
+echo plain
+----

@@ -1,0 +1,15 @@
+:litmus-dir: ./src/core
+
+L8: the directory goes in front of every path of this document.
+
+… :file: vm.txt
+----
+… helper
+----
+
+… helper :file: vm.txt
+----
+helper
+----
+
+include::other.adoc[]

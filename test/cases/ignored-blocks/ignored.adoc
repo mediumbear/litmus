@@ -1,0 +1,25 @@
+L5: commands are ignored in these places.
+
+....
+… not :file: a.txt
+....
+
+////
+… not :file: a.txt
+////
+
+++++
+… not :file: a.txt
+++++
+
+// … not :file: a.txt
+
+----
+… illustration :file: a.txt
+… nothing
+----
+
+… :file: real.txt
+----
+real
+----

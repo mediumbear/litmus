@@ -1,0 +1,21 @@
+Names belong to their file.
+
+… :file: a.txt
+----
+… body
+----
+
+… body :file: a.txt
+----
+in a
+----
+
+… :file: b.txt
+----
+… body
+----
+
+… body :file: b.txt
+----
+in b
+----

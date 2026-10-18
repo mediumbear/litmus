@@ -1,0 +1,15 @@
+… :file: a.txt :other:
+----
+----
+
+… orphan name
+----
+----
+
+… :file: b.txt :file: c.txt
+----
+----
+
+… :x :file: d.txt
+----
+----

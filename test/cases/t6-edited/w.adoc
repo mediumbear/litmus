@@ -1,0 +1,9 @@
+… :file: out.txt
+----
+new text
+----
+
+… :file: other.txt
+----
+other
+----

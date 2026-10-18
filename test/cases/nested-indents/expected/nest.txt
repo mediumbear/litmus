@@ -1,0 +1,9 @@
+top
+  o1
+  	i1
+
+  	  i2
+  	   
+  	    d1
+  o2
+bottom

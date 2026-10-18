@@ -1,0 +1,31 @@
+T2: indents add up through nested excerpts. Tabs are indents too.
+
+… :file: nest.txt
+.The root
+----
+top
+  … outer
+bottom
+----
+
+… outer :file: nest.txt
+----
+o1
+	… inner
+o2
+----
+
+… inner :file: nest.txt
+[source]
+----
+i1
+
+  i2
+   
+    … deepest
+----
+
+… deepest :file: nest.txt
+----
+d1
+----

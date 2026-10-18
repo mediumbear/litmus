@@ -1,0 +1,9 @@
+… :file: a.txt
+----
+… e
+----
+
+… e :file: a.txt :executable:
+----
+x
+----

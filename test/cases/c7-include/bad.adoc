@@ -1,0 +1,8 @@
+… :file: a.txt
+----
+include::x.txt[]
+----
+
+include::[]
+
+include::/abs.adoc[]

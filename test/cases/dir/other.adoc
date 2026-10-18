@@ -1,0 +1,6 @@
+Included documents do not inherit the directory.
+
+… :file: other.txt
+----
+other
+----

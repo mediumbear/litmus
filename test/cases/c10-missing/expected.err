@@ -1,0 +1,2 @@
+a.adoc:1: C10: cannot read gone.adoc
+missing.adoc: C10: cannot read missing.adoc

@@ -1,0 +1,1 @@
+litmus init -o . doc/book.adoc

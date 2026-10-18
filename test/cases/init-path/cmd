@@ -1,0 +1,1 @@
+tools/litmus init -o build doc/a.adoc doc/b.md

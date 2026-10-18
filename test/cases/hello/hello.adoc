@@ -1,0 +1,25 @@
+The program prints a greeting from its main function.
+
+… :file: hello.zig
+[source,zig]
+----
+… imports
+
+pub fn main() void {
+    … greet
+}
+----
+
+The greeting goes to standard error, which needs no setup:
+
+… greet :file: hello.zig
+[source,zig]
+----
+std.debug.print("Hello, Litmus!\n", .{});
+----
+
+… imports :file: hello.zig
+[source,zig]
+----
+const std = @import("std");
+----

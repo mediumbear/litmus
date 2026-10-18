@@ -1,0 +1,6 @@
+… one :file: all.txt
+----
+one
+----
+
+include::../inner.adoc[]

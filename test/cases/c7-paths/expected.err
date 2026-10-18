@@ -1,0 +1,4 @@
+bad.adoc:1: C7: the path must be relative
+bad.adoc:5: C7: the path has a '..' part
+bad.adoc:9: C7: the path has an empty part
+bad.adoc:13: C7: the path is empty

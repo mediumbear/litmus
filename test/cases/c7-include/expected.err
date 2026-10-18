@@ -1,0 +1,3 @@
+bad.adoc:3: C7: an include inside a labeled block
+bad.adoc:6: C7: the include line needs a path and brackets
+bad.adoc:8: C7: the include line needs a path and brackets

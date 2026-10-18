@@ -1,0 +1,7 @@
+:litmus-dir: one
+
+:litmus-dir: two
+
+… :file: a.txt
+----
+----

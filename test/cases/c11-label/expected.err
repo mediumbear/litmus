@@ -1,0 +1,4 @@
+bad.adoc:1: C11: the label has the attribute :other:, and only :file: and :executable: are allowed
+bad.adoc:5: C11: the label has no :file:
+bad.adoc:9: C11: the label has :file: twice
+bad.adoc:13: C11: a name may not start with ':'

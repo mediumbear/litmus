@@ -1,0 +1,14 @@
+… :file: a.txt
+----
+… body
+----
+
+… body :file: b.txt
+----
+x
+----
+
+… :file: b.txt
+----
+… body
+----
