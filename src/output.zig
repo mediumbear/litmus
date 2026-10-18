@@ -23,14 +23,14 @@ pub const Outcome = struct {
     bad_map: ?[]const u8 = null,
 };
 
-fn readOrNull(io: Io, arena: Allocator, dir: Dir, path: []const u8) !?[]const u8 {
+pub fn readOrNull(io: Io, arena: Allocator, dir: Dir, path: []const u8) !?[]const u8 {
     return dir.readFileAlloc(io, path, arena, .limited(1 << 30)) catch |err| switch (err) {
         error.FileNotFound => null,
         else => err,
     };
 }
 
-fn isExecutable(permissions: File.Permissions) bool {
+pub fn isExecutable(permissions: File.Permissions) bool {
     if (comptime !File.Permissions.has_executable_bit) return false;
     return permissions.toMode() & 0o100 != 0;
 }
@@ -44,7 +44,7 @@ fn withExecutable(permissions: File.Permissions, executable: bool) File.Permissi
     return File.Permissions.fromMode(mode);
 }
 
-fn writeAtomic(io: Io, dir: Dir, path: []const u8, bytes: []const u8, executable: bool) !void {
+pub fn writeAtomic(io: Io, dir: Dir, path: []const u8, bytes: []const u8, executable: bool) !void {
     var atomic = try dir.createFileAtomic(io, path, .{
         .permissions = if (executable) .executable_file else .default_file,
         .make_path = true,

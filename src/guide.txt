@@ -1,0 +1,30 @@
+Litmus: a guide for agents
+
+Some files in this project are tangled. Their code lives in documents, asciidoc or
+Markdown, that explain it. A tangled file must always equal what its documents
+tangle to. AGENTS.md gives this project's commands for tangle and check.
+
+Finding your way
+- .litmus/map lists every tangled file: each line starting with "file" names one.
+- `litmus where FILE:LINE` prints the document line, and the excerpt, that a line
+  of a tangled file came from. It works for lines in compiler errors too.
+- A document labels each block of code with the file it lands in:
+  `… name :file: path` for an excerpt, `… :file: path` for the start of a file.
+  Inside a block, a line `… name` inserts that excerpt, at that indent.
+
+Changing code
+1. Edit the tangled file and test it as usual.
+2. Make the same change in the document's block: `litmus where` finds it.
+3. Put new code in a new block, labeled with its name and file, inserted by
+   exactly one `… name` line, with prose before it saying what it does and why.
+4. Run the check command from AGENTS.md. The change is done only when it passes.
+
+Never
+- edit .litmus/map;
+- run `litmus tangle --force` unless the user asks: it overwrites edits in
+  tangled files;
+- start a line of code with `…` (U+2026);
+- leave a tangled file changed without the same change in its document.
+
+If tangle refuses because a file changed since it was tangled, the change is not
+in the documents yet: carry it over (step 2), then check.
