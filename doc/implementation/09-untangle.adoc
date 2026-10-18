@@ -71,6 +71,30 @@ fn same(x: []const u8, y: []const u8) bool {
 
 `diff` first trims the lines that the two texts have in common at the start and at the end, which settles most cases at once. If one side is empty after that, it is one hunk. Otherwise it asks Myers' algorithm which lines are deleted and which are inserted, and turns the answer into hunks.
 
+++++
+<pre class="mermaid">
+flowchart TD
+  start([base lines, changed lines]) --> trim[Set aside the lines both share<br/>at the start and at the end]
+  trim --> empty{Is one middle empty?}
+  empty -- yes --> one[One hunk:<br/>only insertions or only deletions]
+  empty -- no --> myers[Myers' search:<br/>the fewest edits, round by round]
+  myers --> limit{Found within<br/>max_edits rounds?}
+  limit -- yes --> mark[Mark the deleted base lines<br/>and the inserted changed lines]
+  limit -- no --> all[Mark every line of the middle]
+  mark --> walk[Walk both sides together:<br/>unmarked lines pair up,<br/>marked lines between pairs make a hunk]
+  all --> walk
+  walk --> hunks([hunks, in order])
+  one --> hunks
+</pre>
+++++
+
+The animation below runs the same steps on a small example, the classic one from Myers' paper with a shared first and last line added. Each letter stands for a whole line. Step through it, or let it play.
+
+++++
+<div class="lm-myers" data-base="x A B C A B B A y" data-changed="x C B A B A C y"></div>
+<script src="visuals/myers.js"></script>
+++++
+
 … diff :file: diff.zig
 [source,zig]
 ----

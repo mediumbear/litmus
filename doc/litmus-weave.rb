@@ -5,6 +5,7 @@
 # - An excerpt command inside a labeled block links to the excerpt it stands for.
 # - The label links back to the command that uses the excerpt.
 # - Characters that Rouge cannot lex are not painted as errors.
+# - Mermaid is loaded when a page has a diagram.
 
 require 'asciidoctor'
 require 'asciidoctor/extensions'
@@ -122,7 +123,19 @@ module LitmusWeave
         end
         head + lines.join("\n") + tail
       end
-      output.sub('</head>', STYLE + '</head>')
+      head = STYLE
+      # Diagrams written as `<pre class="mermaid">` in a passthrough block are drawn in the
+      # browser by Mermaid.
+      if output.include?('class="mermaid"')
+        head += <<~HTML
+          <style>pre.mermaid { background: none; border: none; text-align: center; }</style>
+          <script type="module">
+          import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.esm.min.mjs';
+          mermaid.initialize({ startOnLoad: true, theme: 'neutral' });
+          </script>
+        HTML
+      end
+      output.sub('</head>', head + '</head>')
     end
   end
 end
