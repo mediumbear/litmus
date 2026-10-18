@@ -39,6 +39,7 @@ pub const Placement = struct {
     /// The excerpt command it is next to, or the edge of the block.
     doc_line: u32,
     kind: enum { after_command, before_command, block_start, block_end },
+    block: *const Block,
     /// The excerpt the command stands for. Empty at the edge of a block.
     name: []const u8 = "",
 };
@@ -204,6 +205,7 @@ fn addLines(plan: *Plan, file: tangle.Tangled, k: u32, total: u32, lines: []cons
                 .doc = e.block.label.doc,
                 .doc_line = command_line,
                 .kind = if (c.after) .after_command else .before_command,
+                .block = e.block,
                 .name = e.block.commands[e.command].name,
             });
         }
@@ -230,6 +232,7 @@ fn addLines(plan: *Plan, file: tangle.Tangled, k: u32, total: u32, lines: []cons
         .doc = origin.run.doc,
         .doc_line = anchor,
         .kind = if (at_start) .block_start else .block_end,
+        .block = block,
     });
 }
 
@@ -247,10 +250,9 @@ fn insertLines(plan: *Plan, file: tangle.Tangled, lines: []const []const u8, blo
     if (placement) |p| try plan.placements.append(plan.arena, p);
 }
 
-/// Applies the edits to the documents, in one pass over each document's lines: for every
-/// original line, what is inserted before it, then the line itself (replaced, deleted,
-/// or kept). Edits name original line numbers, so they never disturb each other.
-pub fn applyEdits(arena: Allocator, docs: []const Document, edits: []const Edit) ![]const Document {
+/// The edits in the order of the documents and their lines. The sort is stable, so lines
+/// inserted at one place keep their order.
+pub fn sortedEdits(arena: Allocator, edits: []const Edit) ![]const Edit {
     const sorted = try arena.dupe(Edit, edits);
     const Order = struct {
         fn less(_: void, a: Edit, b: Edit) bool {
@@ -258,8 +260,32 @@ pub fn applyEdits(arena: Allocator, docs: []const Document, edits: []const Edit)
             return a.line < b.line;
         }
     };
-    // The sort is stable, so lines inserted at one place keep their order.
     std.mem.sort(Edit, sorted, {}, Order.less);
+    return sorted;
+}
+
+/// Where a line of a document is after the edits: lines inserted before it, or removed
+/// above it, move it.
+pub fn shifted(sorted: []const Edit, doc: u32, line: u32) u32 {
+    var result: i64 = line;
+    for (sorted) |e| {
+        if (e.doc != doc or e.line > line) continue;
+        switch (e.kind) {
+            .insert => result += 1,
+            .delete => if (e.line < line) {
+                result -= 1;
+            },
+            .replace => {},
+        }
+    }
+    return @intCast(result);
+}
+
+/// Applies the edits to the documents, in one pass over each document's lines: for every
+/// original line, what is inserted before it, then the line itself (replaced, deleted,
+/// or kept). Edits name original line numbers, so they never disturb each other.
+pub fn applyEdits(arena: Allocator, docs: []const Document, edits: []const Edit) ![]const Document {
+    const sorted = try sortedEdits(arena, edits);
 
     const result = try arena.dupe(Document, docs);
     var at: usize = 0;
@@ -587,6 +613,22 @@ test "U9: edits that break the documents are caught, and nothing is trusted" {
     const docs2 = try applyEdits(a, fx.docs, &command);
     const message2 = try verify(a, docs2, &.{"d.adoc"}, &.{.{ .path = "f.txt", .text = "… x\n  one\n  two\n  deep\nend\n" }});
     try t.expect(message2 != null);
+}
+
+test "shifted: lines move with the lines inserted and removed above them" {
+    const edits = [_]Edit{
+        .{ .doc = 0, .line = 2, .kind = .insert, .text = "a" },
+        .{ .doc = 0, .line = 2, .kind = .insert, .text = "b" },
+        .{ .doc = 0, .line = 4, .kind = .delete },
+        .{ .doc = 0, .line = 6, .kind = .replace, .text = "x" },
+        .{ .doc = 1, .line = 1, .kind = .insert, .text = "other document" },
+    };
+    try t.expectEqual(1, shifted(&edits, 0, 1));
+    try t.expectEqual(4, shifted(&edits, 0, 2));
+    try t.expectEqual(5, shifted(&edits, 0, 3));
+    try t.expectEqual(6, shifted(&edits, 0, 5));
+    try t.expectEqual(7, shifted(&edits, 0, 6));
+    try t.expectEqual(2, shifted(&edits, 1, 1));
 }
 
 test "render keeps a missing final newline" {

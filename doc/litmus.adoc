@@ -254,9 +254,9 @@ pub fn main() void {
 The changed line came from the block of `greet`, so the block changes (U3). The added line sits between two lines of different runs: the end of `greet` and the `}` of the root block. It goes after the command `… greet` in the root block, where the indent of the line allows it (U4). Untangle prints:
 
 ....
-changed 1 line, added 1 line in 1 document
-needs prose: hello.adoc:7 (file root of hello.zig) grew by 1 line
-placed at a boundary: hello.zig:5, after "… greet" at hello.adoc:9
+changed 1 line, removed 0 lines, added 1 line, in 1 document
+needs prose: hello.adoc:3 (file root of hello.zig) grew by 1 line
+placed at a boundary: hello.zig:5 went after "… greet" at hello.adoc:9
 ....
 
 *Rule U1.* The base is the document set tangled in memory. If the base equals the source files, there is nothing to do. If the base differs from what the map says tangle last wrote, the documents changed as well, and untangle stops (U7).

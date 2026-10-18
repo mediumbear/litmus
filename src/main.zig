@@ -9,6 +9,7 @@ const map = @import("map.zig");
 const output = @import("output.zig");
 const compare = @import("compare.zig");
 const init_command = @import("init.zig");
+const untangle = @import("untangle.zig");
 
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
@@ -19,6 +20,7 @@ const usage =
     \\       litmus where [-o DIR] FILE:LINE
     \\       litmus guide
     \\       litmus init [-o DIR] DOCUMENT...
+    \\       litmus untangle [-o DIR] [-f FILE]... [--force] DOCUMENT...
     \\
 ;
 
@@ -34,13 +36,20 @@ const Context = struct {
 const Options = struct {
     out_dir: []const u8 = ".",
     force: bool = false,
+    /// The files named with `-f` (U8).
+    files: []const []const u8 = &.{},
     positional: []const []const u8 = &.{},
 };
 
-/// Reads `-o DIR`, and `--force` when allowed. Prints the problem and returns null on a usage error.
-fn parseOptions(ctx: Context, args: []const []const u8, allow_force: bool) !?Options {
+/// Which options a command takes besides `-o DIR`.
+const Allowed = struct { force: bool = false, files: bool = false };
+
+/// Reads `-o DIR`, and `--force` and `-f FILE` when allowed. Prints the problem and returns
+/// null on a usage error.
+fn parseOptions(ctx: Context, args: []const []const u8, allowed: Allowed) !?Options {
     var options: Options = .{};
     var positional: std.ArrayList([]const u8) = .empty;
+    var files: std.ArrayList([]const u8) = .empty;
     var i: usize = 0;
     while (i < args.len) : (i += 1) {
         const arg = args[i];
@@ -51,8 +60,15 @@ fn parseOptions(ctx: Context, args: []const []const u8, allow_force: bool) !?Opt
                 return null;
             }
             options.out_dir = args[i];
-        } else if (allow_force and std.mem.eql(u8, arg, "--force")) {
+        } else if (allowed.force and std.mem.eql(u8, arg, "--force")) {
             options.force = true;
+        } else if (allowed.files and std.mem.eql(u8, arg, "-f")) {
+            i += 1;
+            if (i == args.len) {
+                try ctx.err.writeAll("litmus: -f needs a file\n");
+                return null;
+            }
+            try files.append(ctx.arena, args[i]);
         } else if (arg.len > 1 and arg[0] == '-') {
             try ctx.err.print("litmus: unknown option {s}\n", .{arg});
             return null;
@@ -61,6 +77,7 @@ fn parseOptions(ctx: Context, args: []const []const u8, allow_force: bool) !?Opt
         }
     }
     options.positional = positional.items;
+    options.files = files.items;
     return options;
 }
 
@@ -122,7 +139,7 @@ fn documentsOk(ctx: Context, documents: []const []const u8) !bool {
 }
 
 fn tangleCommand(ctx: Context, args: []const []const u8) !u8 {
-    const options = (try parseOptions(ctx, args, true)) orelse return 2;
+    const options = (try parseOptions(ctx, args, .{ .force = true })) orelse return 2;
     if (!try documentsOk(ctx, options.positional)) return 2;
     const built = (try build(ctx, options.positional)) orelse return 1;
 
@@ -146,7 +163,7 @@ fn tangleCommand(ctx: Context, args: []const []const u8) !u8 {
 }
 
 fn checkCommand(ctx: Context, args: []const []const u8) !u8 {
-    const options = (try parseOptions(ctx, args, false)) orelse return 2;
+    const options = (try parseOptions(ctx, args, .{})) orelse return 2;
     if (!try documentsOk(ctx, options.positional)) return 2;
     const built = (try build(ctx, options.positional)) orelse return 1;
 
@@ -161,7 +178,7 @@ fn checkCommand(ctx: Context, args: []const []const u8) !u8 {
 }
 
 fn whereCommand(ctx: Context, args: []const []const u8) !u8 {
-    const options = (try parseOptions(ctx, args, false)) orelse return 2;
+    const options = (try parseOptions(ctx, args, .{})) orelse return 2;
     if (options.positional.len != 1) {
         try ctx.err.writeAll(usage);
         return 2;
@@ -204,8 +221,126 @@ fn whereCommand(ctx: Context, args: []const []const u8) !u8 {
     return 0;
 }
 
+fn lines(n: u32) []const u8 {
+    return if (n == 1) "line" else "lines";
+}
+
+fn untangleCommand(ctx: Context, args: []const []const u8) !u8 {
+    const options = (try parseOptions(ctx, args, .{ .force = true, .files = true })) orelse return 2;
+    if (!try documentsOk(ctx, options.positional)) return 2;
+    const built = (try build(ctx, options.positional)) orelse return 1;
+
+    var dir = Io.Dir.cwd().openDir(ctx.io, options.out_dir, .{}) catch |e| {
+        try ctx.err.print("{s}: {s}\n", .{ options.out_dir, @errorName(e) });
+        return 1;
+    };
+    defer dir.close(ctx.io);
+
+    // U1, U7: the documents must not have changed since tangle wrote the files.
+    const map_text = try output.readOrNull(ctx.io, ctx.arena, dir, output.map_path);
+    const previous: ?map.Map = if (map_text) |text| map.read(ctx.arena, text) catch {
+        try ctx.err.print("{s}/{s} cannot be read; tangle first, or untangle with --force\n", .{ options.out_dir, output.map_path });
+        return 1;
+    } else null;
+    if (!options.force) {
+        if (previous == null) {
+            try ctx.err.print("{s}/{s} does not exist, so it is not known whether the documents or the files changed; run litmus tangle, or untangle with --force\n", .{ options.out_dir, output.map_path });
+            return 1;
+        }
+        var stale = false;
+        for (built.files) |file| {
+            const recorded = previous.?.find(file.path);
+            if (recorded == null or !std.mem.eql(u8, recorded.?.hash, &map.hashHex(file.text))) {
+                try ctx.err.print("{s}: the documents tangle to something else than when it was last tangled (U1)\n", .{file.path});
+                stale = true;
+            }
+        }
+        if (stale) {
+            try ctx.err.writeAll("the documents changed too; run litmus sync, or untangle with --force\n");
+            return 1;
+        }
+    }
+
+    // U2, U3, U4, U5, U6: plan the edits file by file.
+    var plan = untangle.Plan.init(ctx.arena, built.docs);
+    var on_disk: std.ArrayList(untangle.FileText) = .empty;
+    for (built.files) |file| {
+        const text = try output.readOrNull(ctx.io, ctx.arena, dir, file.path) orelse {
+            try ctx.err.print("{s}: missing; left alone\n", .{file.path});
+            continue;
+        };
+        try on_disk.append(ctx.arena, .{ .path = file.path, .text = text });
+        if (!std.mem.eql(u8, text, file.text)) try untangle.planFile(&plan, file, text);
+    }
+    // U8
+    var unknown = false;
+    for (options.files) |path| {
+        if (previous == null or previous.?.find(path) == null) {
+            try ctx.err.print("{s}: not in the map; Litmus has no document for it (U8)\n", .{path});
+            unknown = true;
+        }
+    }
+    for (plan.problems.items) |problem| try ctx.err.print("{s}:{d}: {s}\n", .{ problem.file, problem.line, problem.message });
+    if (plan.problems.items.len > 0 or unknown) return 1;
+    if (plan.edits.items.len == 0) {
+        try ctx.out.writeAll("nothing to untangle\n");
+        return 0;
+    }
+
+    // U9: only edits that tangle back to the files are written.
+    const edited = try untangle.applyEdits(ctx.arena, built.docs, plan.edits.items);
+    if (try untangle.verify(ctx.arena, edited, options.positional, on_disk.items)) |message| {
+        try ctx.err.print("U9: {s}; no document was written\n", .{message});
+        return 1;
+    }
+    var touched: u32 = 0;
+    for (edited, built.docs) |new, old| {
+        if (new.lines.ptr == old.lines.ptr) continue;
+        try output.writeAtomic(ctx.io, Io.Dir.cwd(), old.path, try untangle.render(ctx.arena, new), false);
+        touched += 1;
+    }
+
+    // The documents moved, so the map is made again. The files are equal to what the
+    // documents tangle to now, so none of them is written.
+    const after = (try build(ctx, options.positional)) orelse return 1;
+    const new_map = try map.render(ctx.arena, after.docs, after.files);
+    const outcome = try output.write(ctx.io, ctx.arena, dir, after.files, new_map, options.force);
+    if (outcome.conflicts.len > 0 or outcome.bad_map != null) {
+        try ctx.err.writeAll("litmus: the map could not be updated\n");
+        return 1;
+    }
+
+    // The report: what was done, and what is left for the writer.
+    const sorted = try untangle.sortedEdits(ctx.arena, plan.edits.items);
+    try ctx.out.print("changed {d} {s}, removed {d} {s}, added {d} {s}, in {d} {s}\n", .{
+        plan.changed, lines(plan.changed), plan.removed, lines(plan.removed), plan.added, lines(plan.added), touched, if (touched == 1) "document" else "documents",
+    });
+    for (plan.growth.items) |g| {
+        const label = g.block.label;
+        try ctx.out.print("needs prose: {s}:{d} ({s} of {s}) grew by {d} {s}\n", .{
+            built.docs[label.doc].path,
+            untangle.shifted(sorted, label.doc, label.line),
+            label.name orelse "file root",
+            label.file,
+            g.added,
+            lines(g.added),
+        });
+    }
+    for (plan.placements.items) |p| {
+        const doc = built.docs[p.doc].path;
+        const where = untangle.shifted(sorted, p.doc, p.doc_line);
+        switch (p.kind) {
+            .after_command => try ctx.out.print("placed at a boundary: {s}:{d} went after \"… {s}\" at {s}:{d}\n", .{ p.file, p.line, p.name, doc, where }),
+            .before_command => try ctx.out.print("placed at a boundary: {s}:{d} went before \"… {s}\" at {s}:{d}\n", .{ p.file, p.line, p.name, doc, where }),
+            .block_start => try ctx.out.print("placed at a boundary: {s}:{d} went to the start of the block at {s}:{d}\n", .{ p.file, p.line, doc, untangle.shifted(sorted, p.doc, p.block.label.line) }),
+            .block_end => try ctx.out.print("placed at a boundary: {s}:{d} went to the end of the block at {s}:{d}\n", .{ p.file, p.line, doc, untangle.shifted(sorted, p.doc, p.block.label.line) }),
+        }
+    }
+    return 0;
+}
+
 fn initCommand(ctx: Context, exe: []const u8, args: []const []const u8) !u8 {
-    const options = (try parseOptions(ctx, args, false)) orelse return 2;
+    const options = (try parseOptions(ctx, args, .{})) orelse return 2;
     if (!try documentsOk(ctx, options.positional)) return 2;
     return init_command.run(ctx.io, ctx.arena, .{ .exe = exe, .dir = options.out_dir, .documents = options.positional }, ctx.out, ctx.err);
 }
@@ -236,6 +371,7 @@ pub fn main(init: std.process.Init) !u8 {
         if (std.mem.eql(u8, command, "check")) break :run checkCommand(ctx, rest);
         if (std.mem.eql(u8, command, "where")) break :run whereCommand(ctx, rest);
         if (std.mem.eql(u8, command, "init")) break :run initCommand(ctx, args[0], rest);
+        if (std.mem.eql(u8, command, "untangle")) break :run untangleCommand(ctx, rest);
         if (std.mem.eql(u8, command, "guide")) {
             try out.writeAll(guide_text);
             break :run 0;
