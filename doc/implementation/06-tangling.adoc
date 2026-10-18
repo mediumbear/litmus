@@ -14,6 +14,8 @@ Every line of the output ends with `\n`, the last one included. A `\r` that was 
 
 While it expands, tangle also records where each line came from. That is the map (chapter 7), and it is what turns an error in a tangled file into a line of the document. The record is made as _runs_, and not line by line, because a block is usually copied whole: a run is a stretch of consecutive output lines that came from consecutive lines of one block, with the same indent. A run is usually many lines long, so the map is much shorter than the files.
 
+Untangle needs more than the map keeps. For each excerpt command that tangle expands, it also records an _expansion_: the output lines that the command produced, the block it is in, and the indents around it. Expansions are only kept in memory, and tell untangle, when a line is added at the edge of an excerpt, which commands are next to the place, and what indent a line must have to belong to each.
+
 Tangle is one file, and has no IO. It takes the resolved files and returns each file's text with its runs.
 
 … :file: tangle.zig
@@ -47,7 +49,7 @@ const Block = types.Block;
 const Run = types.Run;
 ----
 
-The result for one file: its path, whether it is executable, its text, and its runs. The text always ends with a newline when it has any lines (T3).
+The result for one file: its path, whether it is executable, its text, its runs, and its expansions. The text always ends with a newline when it has any lines (T3).
 
 … Tangled :file: tangle.zig
 [source,zig]
@@ -58,6 +60,8 @@ pub const Tangled = struct {
     /// Every line ends with `\n` (T3).
     text: []const u8,
     runs: []const Run,
+    /// The excerpt commands that were expanded, in the order they begin. Untangle needs them.
+    expansions: []const types.Expansion,
 };
 ----
 
@@ -90,13 +94,17 @@ const Expander = struct {
 };
 ----
 
-Besides the output, the expander counts the lines it has written, and remembers which block line would continue the last run: the block it came from and the index of the next line in it.
+Besides the output, the expander counts the lines it has written, and remembers which block line would continue the last run: the block it came from and the index of the next line in it. It also keeps the expansions, the one that the lines now being written belong to, and how deep inside excerpts it is.
 
 … Expander state :file: tangle.zig
 [source,zig]
 ----
 out: std.ArrayList(u8) = .empty,
 runs: std.ArrayList(Run) = .empty,
+expansions: std.ArrayList(types.Expansion) = .empty,
+/// The expansion that the lines now written belong to.
+current: u32 = types.no_expansion,
+depth: u32 = 0,
 /// The indents of the excerpt commands being expanded, put together.
 prefix: std.ArrayList(u8) = .empty,
 /// The lines written so far.
@@ -108,6 +116,8 @@ next_index: u32 = 0,
 
 `block` walks one block's lines. The parser recorded the excerpt commands in order, so one index into them is enough to know if the next line is a command. A command's indent is added to the prefix, and the excerpt's blocks are expanded in document order, each by `block` again. When they are done the prefix goes back to where it was.
 
+An expansion is recorded as the command is reached, when only its first line is known, and its last line is filled in when the excerpt's blocks are done. An excerpt with no lines ends one line before it begins. The indent is stored with the expansion as a copy, since the expander's own prefix changes as it goes in and out of excerpts.
+
 The excerpt always exists. Tangle runs only when the checks have passed, and a command with no excerpt would have been C1.
 
 … Expander, an excerpt command :file: tangle.zig
@@ -118,9 +128,24 @@ if (command < b.commands.len and b.commands[command].index == i) {
     command += 1;
     const mark = self.prefix.items.len;
     try self.prefix.appendSlice(self.arena, c.indent);
+    const outer = self.current;
+    self.current = @intCast(self.expansions.items.len);
+    try self.expansions.append(self.arena, .{
+        .first_line = self.lines + 1,
+        .last_line = self.lines,
+        .block = b,
+        .command = @intCast(command - 1),
+        .prefix = try self.arena.dupe(u8, self.prefix.items),
+        .outer_len = @intCast(mark),
+        .depth = self.depth,
+    });
+    self.depth += 1;
     // Unknown names were reported as C1, and tangling does not happen then.
     const excerpt = self.file.excerpts.get(c.name).?;
     for (excerpt.blocks.items) |inner| try self.block(inner);
+    self.expansions.items[self.current].last_line = self.lines;
+    self.current = outer;
+    self.depth -= 1;
     self.prefix.items.len = mark;
     continue;
 }
@@ -139,16 +164,17 @@ self.out.appendAssumeCapacity('\n');
 self.lines += 1;
 ----
 
-Then the record. If this line follows the last one in the same block and has the same indent, the last run grows by one. An empty line has no indent, so it fits in a run of any indent, and the run takes its indent from the first non-empty line.
+Then the record. If this line follows the last one in the same block, the last run grows by one. A block is expanded once, so the lines that follow each other in it have the same indent. An empty line carries none, so a run that starts with an empty line takes its indent from the first line that has text.
 
 … Expander, extend the last run :file: tangle.zig
 [source,zig]
 ----
 const last: ?*Run = if (self.runs.items.len > 0) &self.runs.items[self.runs.items.len - 1] else null;
 if (last) |run| {
-    // An empty line carries no indent, so it joins a run of any indent.
-    const same_indent = text.len == 0 or run.indent == indent;
-    if (self.next_block == b and self.next_index == index and same_indent) {
+    // A block is expanded once, so lines that follow each other in it have the same
+    // indent. An empty line carries none, so a run that starts with one takes the
+    // indent of the first line that has text.
+    if (self.next_block == b and self.next_index == index) {
         run.count += 1;
         if (text.len > 0) run.indent = indent;
         self.next_index += 1;
@@ -157,7 +183,7 @@ if (last) |run| {
 }
 ----
 
-Otherwise a new run starts here. It keeps the line in the file, the document and the line it came from, the indent, and the excerpt's name, or `:file:` for the file root.
+Otherwise a new run starts here. It keeps the line in the file, the document and the line it came from, the indent, and the excerpt's name, or `:file:` for the file root. It also keeps its block and its expansion, for untangle.
 
 … Expander, start a run :file: tangle.zig
 [source,zig]
@@ -169,6 +195,8 @@ try self.runs.append(self.arena, .{
     .doc_line = b.first_line + index,
     .indent = indent,
     .excerpt = b.label.name orelse ":file:",
+    .expansion = self.current,
+    .block = b,
 });
 self.next_block = b;
 self.next_index = index + 1;
@@ -191,6 +219,7 @@ pub fn tangleAll(arena: Allocator, resolved: resolve.Resolved) ![]const Tangled 
             .executable = file.executable,
             .text = expander.out.items,
             .runs = expander.runs.items,
+            .expansions = expander.expansions.items,
         });
     }
     return result.items;
@@ -199,7 +228,7 @@ pub fn tangleAll(arena: Allocator, resolved: resolve.Resolved) ![]const Tangled 
 
 === Tests
 
-The first test is the example of the spec. `hello.adoc` has to tangle to exactly the `hello.zig` and the runs shown there. The other tests cover the indent through nesting and with tabs, lines of spaces, an excerpt of several blocks, a `\r` in a line, how runs split, and empty files.
+The first test is the example of the spec. `hello.adoc` has to tangle to exactly the `hello.zig` and the runs shown there. The other tests cover the indent through nesting and with tabs, lines of spaces, an excerpt of several blocks, a `\r` in a line, how runs split, empty files, and the expansions that untangle depends on.
 
 … test helpers :file: tangle.zig
 [source,zig]
@@ -353,5 +382,32 @@ test "an excerpt used in a file with no lines, and a file with an empty root" {
     try t.expectEqualStrings("", out[0].text);
     try t.expectEqual(0, out[0].runs.len);
     try t.expect(out[1].executable);
+}
+
+test "expansions: where each excerpt command was expanded, with its indents" {
+    var arena_state = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena_state.deinit();
+    const out = try tangleText(arena_state.allocator(), "… :file: a\n----\ntop\n  … outer\n  … empty\nend\n----\n… outer :file: a\n----\no1\n\t… inner\n----\n… inner :file: a\n----\ni1\ni2\n----\n… empty :file: a\n----\n----\n");
+    const ex = out[0].expansions;
+    try t.expectEqual(3, ex.len);
+    // outer: lines 2 to 4, in the root block's command 0
+    try t.expectEqual(2, ex[0].first_line);
+    try t.expectEqual(4, ex[0].last_line);
+    try t.expectEqual(0, ex[0].command);
+    try t.expectEqualStrings("  ", ex[0].prefix);
+    try t.expectEqual(0, ex[0].outer_len);
+    // inner: lines 3 to 4, in outer's block
+    try t.expectEqual(3, ex[1].first_line);
+    try t.expectEqual(4, ex[1].last_line);
+    try t.expectEqualStrings("  \t", ex[1].prefix);
+    try t.expectEqual(2, ex[1].outer_len);
+    // empty: no lines, so the last line is one before the first
+    try t.expectEqual(5, ex[2].first_line);
+    try t.expectEqual(4, ex[2].last_line);
+    try t.expectEqual(1, ex[2].command);
+    // The runs know their expansion.
+    try t.expectEqual(types.no_expansion, out[0].runs[0].expansion);
+    try t.expectEqual(0, out[0].runs[1].expansion);
+    try t.expectEqual(1, out[0].runs[2].expansion);
 }
 ----

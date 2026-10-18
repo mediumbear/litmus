@@ -148,7 +148,7 @@ if (self.seen.get(path)) |seen| {
 }
 ----
 
-A new document gets the next number and is entered in the set before it is parsed, so that its includes can refer back to it. The text is read through the loader's `read`, and cut into lines. A document with an unknown extension is not even read.
+A new document gets the next number and is entered in the set before it is parsed, so that its includes can refer back to it. The text is read through the loader's `read`, and cut into lines. A document with an unknown extension is not even read. It also notes whether the text ends with a newline, so that untangle can write the document back as it was.
 
 … visit, register the document :file: docset.zig
 [source,zig]
@@ -157,7 +157,7 @@ const index: u32 = @intCast(self.docs.items.len);
 const format = formatOf(path);
 const text = if (format != null) self.read(self.fs, self.arena, path) else null;
 const lines = if (text) |bytes| try scan.splitLines(self.arena, bytes) else &[0][]const u8{};
-try self.docs.append(self.arena, .{ .path = path, .format = format orelse .asciidoc, .lines = lines, .dir = dirOf(path) });
+try self.docs.append(self.arena, .{ .path = path, .format = format orelse .asciidoc, .lines = lines, .dir = dirOf(path), .final_newline = text == null or text.?.len == 0 or text.?[text.?.len - 1] == '\n' });
 try self.seen.put(self.arena, path, .{ .doc = index, .reading = true });
 defer self.seen.getPtr(path).?.reading = false;
 ----

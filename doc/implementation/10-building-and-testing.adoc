@@ -8,7 +8,7 @@ Unit tests::
 Zig tests in the source files, next to the code they check. `zig build test` runs them. Each names the rule of the spec that it checks.
 
 Golden tests::
-Small documents in `test/cases`, with the files and messages that tangling them must give. `zig build cases` tangles each one, checks the result, changes a byte to see that `check` finds it, and asks `where` about every run. They cover every rule and every check of the spec, and init. They are plain files, not part of this book, since they are data and not code to explain.
+Small documents in `test/cases`, with the files and messages that tangling them must give. `zig build cases` tangles each one, checks the result, changes a byte to see that `check` finds it, and asks `where` about every run. They cover every rule and every check of the spec, init, and untangle. They are plain files, not part of this book, since they are data and not code to explain.
 
 The self test::
 `zig build self` is the proof that this book is Litmus. It tangles the book into an empty directory, builds a Litmus from that directory and runs its tests, and with that Litmus tangles the book again. The files must equal the repository's, byte for byte, both times. The book describes the program that tangles it, and the program tangles the book.
@@ -171,6 +171,9 @@ test {
     _ = @import("output.zig");
     _ = @import("compare.zig");
     _ = @import("init.zig");
+    _ = @import("diff.zig");
+    _ = @import("untangle.zig");
+    _ = @import("sync.zig");
 }
 ----
 
@@ -186,6 +189,10 @@ test {
 … expect_same
 
 … run_init
+
+… untangle_case
+
+… init_case
 
 … tangle_case
 
@@ -235,7 +242,7 @@ expect_same() {
 
 === Golden cases
 
-A case that has a file `cmd` is an init case. The command is run in a sandbox that holds the files of `before`, with Litmus available under the name the command uses: on the `PATH`, or at a relative path such as `tools/litmus` (I1). The sandbox must then equal `expected`, and the second run has to print nothing and change nothing (I4).
+A case with a file `cmd` is an init case, and one with a directory `edit` is an untangle case. The others tangle. A small function runs the command of an init case, with Litmus reachable under the name the command uses: on the `PATH`, or at a relative path such as `tools/litmus` (I1).
 
 … run_init :file: test/run.sh
 [source,bash]
@@ -259,7 +266,52 @@ run_init() {
   fi
   return $code
 }
+----
 
+An untangle case has a directory `edit`, which holds changed copies of the tangled files. The documents are tangled into the output directory first, or the output starts as `before`, which is how the cases for a stale map or no map are made. Then the files of `edit` are copied over the output, as a writer's edits would be, and the files named in `remove` are removed. Untangle must give the documents in `expected`, and say what `expected.out` and `expected.err` say. When it succeeds, `check` must pass on the result, and a second untangle must find nothing to do. The documents are copied into a sandbox first, since untangle changes them.
+
+… untangle_case :file: test/run.sh
+[source,bash]
+----
+# A case with an `edit` directory is an untangle case. The documents are tangled into the
+# output, or the output starts as `before`. Then the files of `edit` are copied over the
+# output, those named in `remove` are removed, and untangle has to give the documents
+# in `expected`. Options for untangle go in `options`.
+untangle_case() {
+  local dir=$1 name=$2 sandbox=$work/sandbox out=$work/out args options="" want_exit=0 code path
+  rm -rf "$sandbox" "$out" && mkdir -p "$sandbox" "$out"
+  cp -R "$dir/." "$sandbox/"
+  (cd "$sandbox" && rm -rf edit expected before remove expected.out expected.err args exit options)
+  [ -f "$dir/exit" ] && want_exit=$(cat "$dir/exit")
+  [ -f "$dir/options" ] && options=$(cat "$dir/options")
+  args=$(cat "$dir/args")
+  if [ -d "$dir/before" ]; then
+    cp -R "$dir/before/." "$out/"
+  else
+    (cd "$sandbox" && "$litmus" tangle -o "$out" $args) > /dev/null 2>&1 || fail "$name" "the documents do not tangle"
+  fi
+  cp -R "$dir/edit/." "$out/"
+  [ -f "$dir/remove" ] && while read -r path; do rm -f "$out/$path"; done < "$dir/remove"
+  (cd "$sandbox" && "$litmus" untangle -o "$out" $options $args) > "$work/stdout" 2> "$work/stderr"
+  code=$?
+  [ "$code" -eq "$want_exit" ] || fail "$name" "untangle exited $code, not $want_exit"
+  expect_same "$name (the documents)" "$sandbox" "$dir/expected"
+  expect_same "$name (what untangle prints)" "$work/stdout" "$( [ -f "$dir/expected.out" ] && echo "$dir/expected.out" || echo /dev/null )"
+  expect_same "$name (what untangle says)" "$work/stderr" "$( [ -f "$dir/expected.err" ] && echo "$dir/expected.err" || echo /dev/null )"
+  [ "$want_exit" -eq 0 ] || return
+  # The documents tangle to the files, and a second untangle has nothing to do. A file that
+  # was removed stays missing.
+  [ -f "$dir/remove" ] || (cd "$sandbox" && "$litmus" check -o "$out" $args) > /dev/null 2> "$work/stderr" || fail "$name" "check failed after untangle: $(cat "$work/stderr")"
+  (cd "$sandbox" && "$litmus" untangle -o "$out" $options $args) > "$work/stdout" 2> /dev/null
+  [ "$(cat "$work/stdout")" = "nothing to untangle" ] || fail "$name" "the second untangle said: $(cat "$work/stdout")"
+}
+----
+
+A case that has a file `cmd` is an init case. The command is run in a sandbox that holds the files of `before`, with Litmus available under the name the command uses: on the `PATH`, or at a relative path such as `tools/litmus` (I1). The sandbox must then equal `expected`, and the second run has to print nothing and change nothing (I4).
+
+… init_case :file: test/run.sh
+[source,bash]
+----
 # A case with a `cmd` file is an init case. The others are tangle cases.
 init_case() {
   local dir=$1 name=$2 sandbox=$work/sandbox cmd
@@ -382,7 +434,7 @@ while IFS=$'\t' read -r first second third fourth fifth sixth; do
 done < "$out/.litmus/map"
 ----
 
-`cases` runs every directory of `test/cases`. After the cases it times the tangling of a generated document of 100,000 lines of code, a thousand excerpts of a hundred lines each. The time is printed and not judged, since it depends on the machine and on whether the program is a release build.
+`cases` runs every directory of `test/cases`, and picks the function by what the directory holds. After the cases it times the tangling of a generated document of 100,000 lines of code, a thousand excerpts of a hundred lines each, and then the untangling of one changed line of the result. The times are printed and not judged, since they depend on the machine and on whether the program is a release build.
 
 … cases :file: test/run.sh
 [source,bash]
@@ -393,7 +445,13 @@ cases() {
     dir=${dir%/}
     name=$(basename "$dir")
     count=$((count + 1))
-    if [ -f "$dir/cmd" ]; then init_case "$dir" "$name"; else tangle_case "$dir" "$name"; fi
+    if [ -f "$dir/cmd" ]; then
+      init_case "$dir" "$name"
+    elif [ -d "$dir/edit" ]; then
+      untangle_case "$dir" "$name"
+    else
+      tangle_case "$dir" "$name"
+    fi
   done
   echo "cases: $count run"
   speed
@@ -422,6 +480,10 @@ speed() {
   echo "speed: tangled $lines lines in about $((end - start)) s (whole seconds)"
   TIMEFORMAT='speed: %R s of wall time for the same tangle, second run'
   time (cd "$big" && "$litmus" tangle -o out2 big.adoc) > /dev/null
+  # And untangling one changed line of it.
+  awk 'NR == 50000 { print "    a changed line"; next } { print }' "$big/out/big.txt" > "$big/out/big.tmp" && mv "$big/out/big.tmp" "$big/out/big.txt"
+  TIMEFORMAT='speed: %R s of wall time to untangle one changed line'
+  time (cd "$big" && "$litmus" untangle -o out big.adoc) > /dev/null
 }
 ----
 

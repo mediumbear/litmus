@@ -12,6 +12,8 @@ Litmus is a literate programming tool: it tangles asciidoc and Markdown document
 <!-- litmus -->
 This project uses Litmus: some source files are tangled from documents that
 explain them. Run `zig-out/bin/litmus guide` before changing any file listed in
-.litmus/map. Tangle with `zig-out/bin/litmus tangle doc/implementation.adoc`, and make sure
+.litmus/map. After editing a tangled file, carry the change into the
+documents with `zig-out/bin/litmus untangle doc/implementation.adoc`, and write the prose it asks for.
+Tangle with `zig-out/bin/litmus tangle doc/implementation.adoc`, and make sure
 `zig-out/bin/litmus check doc/implementation.adoc` passes before finishing.
 <!-- /litmus -->

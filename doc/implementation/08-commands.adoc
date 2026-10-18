@@ -48,12 +48,18 @@ Prepares a project so that agents find the guide.
 
 … whereCommand
 
+… lines
+
+… untangleCommand
+
+… syncCommand
+
 … initCommand
 
 … main
 ----
 
-The file imports every stage, since it is where they meet.
+The file imports every stage, since it is where they meet. Untangle and sync are the last two.
 
 … header :file: main.zig
 [source,zig]
@@ -69,12 +75,14 @@ const map = @import("map.zig");
 const output = @import("output.zig");
 const compare = @import("compare.zig");
 const init_command = @import("init.zig");
+const untangle = @import("untangle.zig");
+const sync = @import("sync.zig");
 
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
 ----
 
-The usage text is printed for any wrong command line, and the guide is embedded in the program with `@embedFile`, so that `litmus guide` always matches the version of Litmus in use.
+The usage text is printed for any wrong command line, and lists the seven commands, and the guide is embedded in the program with `@embedFile`, so that `litmus guide` always matches the version of Litmus in use.
 
 … usage :file: main.zig
 [source,zig]
@@ -85,6 +93,8 @@ const usage =
     \\       litmus where [-o DIR] FILE:LINE
     \\       litmus guide
     \\       litmus init [-o DIR] DOCUMENT...
+    \\       litmus untangle [-o DIR] [-f FILE]... [--force] DOCUMENT...
+    \\       litmus sync [-o DIR] DOCUMENT...
     \\
 ;
 
@@ -104,7 +114,7 @@ const Context = struct {
 };
 ----
 
-The options are `-o DIR`, and `--force` for tangle only. Anything else that starts with a hyphen is an error, and the rest are the positional arguments: documents, or the `FILE:LINE` of `where`. `parseOptions` prints the problem itself and returns null, and the caller exits with 2.
+The options are `-o DIR`, `--force` for tangle and untangle, and `-f FILE` for untangle (U8). Each command says which of them it takes, in an `Allowed` value. Anything else that starts with a hyphen is an error, and the rest are the positional arguments: documents, or the `FILE:LINE` of `where`. `parseOptions` prints the problem itself and returns null, and the caller exits with 2.
 
 … Options :file: main.zig
 [source,zig]
@@ -112,13 +122,20 @@ The options are `-o DIR`, and `--force` for tangle only. Anything else that star
 const Options = struct {
     out_dir: []const u8 = ".",
     force: bool = false,
+    /// The files named with `-f` (U8).
+    files: []const []const u8 = &.{},
     positional: []const []const u8 = &.{},
 };
 
-/// Reads `-o DIR`, and `--force` when allowed. Prints the problem and returns null on a usage error.
-fn parseOptions(ctx: Context, args: []const []const u8, allow_force: bool) !?Options {
+/// Which options a command takes besides `-o DIR`.
+const Allowed = struct { force: bool = false, files: bool = false };
+
+/// Reads `-o DIR`, and `--force` and `-f FILE` when allowed. Prints the problem and returns
+/// null on a usage error.
+fn parseOptions(ctx: Context, args: []const []const u8, allowed: Allowed) !?Options {
     var options: Options = .{};
     var positional: std.ArrayList([]const u8) = .empty;
+    var files: std.ArrayList([]const u8) = .empty;
     var i: usize = 0;
     while (i < args.len) : (i += 1) {
         const arg = args[i];
@@ -129,8 +146,15 @@ fn parseOptions(ctx: Context, args: []const []const u8, allow_force: bool) !?Opt
                 return null;
             }
             options.out_dir = args[i];
-        } else if (allow_force and std.mem.eql(u8, arg, "--force")) {
+        } else if (allowed.force and std.mem.eql(u8, arg, "--force")) {
             options.force = true;
+        } else if (allowed.files and std.mem.eql(u8, arg, "-f")) {
+            i += 1;
+            if (i == args.len) {
+                try ctx.err.writeAll("litmus: -f needs a file\n");
+                return null;
+            }
+            try files.append(ctx.arena, args[i]);
         } else if (arg.len > 1 and arg[0] == '-') {
             try ctx.err.print("litmus: unknown option {s}\n", .{arg});
             return null;
@@ -139,6 +163,7 @@ fn parseOptions(ctx: Context, args: []const []const u8, allow_force: bool) !?Opt
         }
     }
     options.positional = positional.items;
+    options.files = files.items;
     return options;
 }
 ----
@@ -226,7 +251,7 @@ fn documentsOk(ctx: Context, documents: []const []const u8) !bool {
 [source,zig]
 ----
 fn tangleCommand(ctx: Context, args: []const []const u8) !u8 {
-    const options = (try parseOptions(ctx, args, true)) orelse return 2;
+    const options = (try parseOptions(ctx, args, .{ .force = true })) orelse return 2;
     if (!try documentsOk(ctx, options.positional)) return 2;
     const built = (try build(ctx, options.positional)) orelse return 1;
 
@@ -272,7 +297,7 @@ for (outcome.orphans) |path| try ctx.err.print("{s}: no longer tangled (T5); lef
 [source,zig]
 ----
 fn checkCommand(ctx: Context, args: []const []const u8) !u8 {
-    const options = (try parseOptions(ctx, args, false)) orelse return 2;
+    const options = (try parseOptions(ctx, args, .{})) orelse return 2;
     if (!try documentsOk(ctx, options.positional)) return 2;
     const built = (try build(ctx, options.positional)) orelse return 1;
 
@@ -293,7 +318,7 @@ fn checkCommand(ctx: Context, args: []const []const u8) !u8 {
 [source,zig]
 ----
 fn whereCommand(ctx: Context, args: []const []const u8) !u8 {
-    const options = (try parseOptions(ctx, args, false)) orelse return 2;
+    const options = (try parseOptions(ctx, args, .{})) orelse return 2;
     if (options.positional.len != 1) {
         try ctx.err.writeAll(usage);
         return 2;
@@ -361,13 +386,261 @@ const excerpt = if (std.mem.eql(u8, run.excerpt, ":file:")) "file root" else run
 try ctx.out.print("{s}:{d} ({s})\n", .{ run.doc, run.doc_line + (line - run.line), excerpt });
 ----
 
+=== Untangle and sync
+
+The report says `1 line` and `2 lines`, so a small function chooses the word.
+
+… lines :file: main.zig
+[source,zig]
+----
+fn lines(n: u32) []const u8 {
+    return if (n == 1) "line" else "lines";
+}
+----
+
+`untangle` carries the changes made in the tangled files back into the documents. The work is done by chapter 9, which plans the edits, applies them and checks the result. The command's part is to make sure it is safe, to do the writing, and to report.
+
+It begins like `check`: the document set is built, and the output directory is opened.
+
+… untangleCommand :file: main.zig
+[source,zig]
+----
+fn untangleCommand(ctx: Context, args: []const []const u8) !u8 {
+    const options = (try parseOptions(ctx, args, .{ .force = true, .files = true })) orelse return 2;
+    if (!try documentsOk(ctx, options.positional)) return 2;
+    const built = (try build(ctx, options.positional)) orelse return 1;
+
+    var dir = Io.Dir.cwd().openDir(ctx.io, options.out_dir, .{}) catch |e| {
+        try ctx.err.print("{s}: {s}\n", .{ options.out_dir, @errorName(e) });
+        return 1;
+    };
+    defer dir.close(ctx.io);
+
+    … untangle, the documents must be unchanged
+
+    … untangle, plan the edits
+
+    … untangle, write the documents
+
+    … untangle, update the map
+
+    … untangle, the report
+    return 0;
+}
+----
+
+Untangle's base is the documents tangled in memory (U1). That is right only if the documents' code is what tangle last wrote. If it is not, the documents changed too, and the differences between the files and the base would partly be the documents' own edits, which untangle would take back. So the tangled text of every file is compared with the hash in the map, and any difference stops the command (U1, U7). Without a map nothing can be known, and that stops it too. `--force` skips this, for the writer who knows the documents did not change.
+
+… untangle, the documents must be unchanged :file: main.zig
+[source,zig]
+----
+// U1, U7: the documents must not have changed since tangle wrote the files.
+const map_text = try output.readOrNull(ctx.io, ctx.arena, dir, output.map_path);
+const previous: ?map.Map = if (map_text) |text| map.read(ctx.arena, text) catch {
+    try ctx.err.print("the map ({s}) cannot be read; tangle first, or untangle with --force\n", .{output.map_path});
+    return 1;
+} else null;
+if (!options.force) {
+    if (previous == null) {
+        try ctx.err.print("there is no map ({s}), so it is not known whether the documents or the files changed; run litmus tangle, or untangle with --force\n", .{output.map_path});
+        return 1;
+    }
+    var stale = false;
+    for (built.files) |file| {
+        const recorded = previous.?.find(file.path);
+        if (recorded == null or !std.mem.eql(u8, recorded.?.hash, &map.hashHex(file.text))) {
+            try ctx.err.print("{s}: the documents tangle to something else than when it was last tangled (U1)\n", .{file.path});
+            stale = true;
+        }
+    }
+    if (stale) {
+        try ctx.err.writeAll("the documents changed too; run litmus sync, or untangle with --force\n");
+        return 1;
+    }
+}
+----
+
+Then each tangled file is read, and the ones that differ from the base are planned (U2 to U6). A file that is missing is reported and left alone (U3). The files named with `-f` that the map does not list are reported (U8). Anything the plan could not place is printed, in the form `file:line: message`, and stops the command with nothing written (U5).
+
+… untangle, plan the edits :file: main.zig
+[source,zig]
+----
+// U2, U3, U4, U5, U6: plan the edits file by file.
+var plan = untangle.Plan.init(ctx.arena, built.docs);
+var on_disk: std.ArrayList(untangle.FileText) = .empty;
+for (built.files) |file| {
+    const text = try output.readOrNull(ctx.io, ctx.arena, dir, file.path) orelse {
+        try ctx.err.print("{s}: missing; left alone\n", .{file.path});
+        continue;
+    };
+    try on_disk.append(ctx.arena, .{ .path = file.path, .text = text });
+    if (!std.mem.eql(u8, text, file.text)) try untangle.planFile(&plan, file, text);
+}
+// U8
+var unknown = false;
+for (options.files) |path| {
+    if (previous == null or previous.?.find(path) == null) {
+        try ctx.err.print("{s}: not in the map; Litmus has no document for it (U8)\n", .{path});
+        unknown = true;
+    }
+}
+for (plan.problems.items) |problem| try ctx.err.print("{s}:{d}: {s}\n", .{ problem.file, problem.line, problem.message });
+if (plan.problems.items.len > 0 or unknown) return 1;
+if (plan.edits.items.len == 0) {
+    try ctx.out.writeAll("nothing to untangle\n");
+    return 0;
+}
+----
+
+If the plan holds, the edits are applied to the documents in memory, and the result is checked: it must tangle to exactly the files on disk (U9). Only then are the documents written, each whole and atomically, as tangled files are.
+
+… untangle, write the documents :file: main.zig
+[source,zig]
+----
+// U9: only edits that tangle back to the files are written.
+const edited = try untangle.applyEdits(ctx.arena, built.docs, plan.edits.items);
+if (try untangle.verify(ctx.arena, edited, options.positional, on_disk.items)) |message| {
+    try ctx.err.print("U9: {s}; no document was written\n", .{message});
+    return 1;
+}
+var touched: u32 = 0;
+for (edited, built.docs) |new, old| {
+    if (new.lines.ptr == old.lines.ptr) continue;
+    try output.writeAtomic(ctx.io, Io.Dir.cwd(), old.path, try untangle.render(ctx.arena, new), false);
+    touched += 1;
+}
+----
+
+The documents have moved lines, so the map is made again. Every file is equal to what the documents tangle to now, so the writer of chapter 7 writes the map and no file.
+
+… untangle, update the map :file: main.zig
+[source,zig]
+----
+// The documents moved, so the map is made again. The files are equal to what the
+// documents tangle to now, so none of them is written.
+const after = (try build(ctx, options.positional)) orelse return 1;
+const new_map = try map.render(ctx.arena, after.docs, after.files);
+const outcome = try output.write(ctx.io, ctx.arena, dir, after.files, new_map, options.force);
+if (outcome.conflicts.len > 0 or outcome.bad_map != null) {
+    try ctx.err.writeAll("litmus: the map could not be updated\n");
+    return 1;
+}
+----
+
+The report is for the writer. It says how many lines were changed, removed and added, and then what is left to do. For each block that grew, _needs prose_ gives its place in the new document (U6). For each line that could have gone to more than one place, a line says where it went (U4). The line numbers are those after the edits, found by `shifted` from chapter 9.
+
+… untangle, the report :file: main.zig
+[source,zig]
+----
+// The report: what was done, and what is left for the writer.
+const sorted = try untangle.sortedEdits(ctx.arena, plan.edits.items);
+try ctx.out.print("changed {d} {s}, removed {d} {s}, added {d} {s}, in {d} {s}\n", .{
+    plan.changed, lines(plan.changed), plan.removed, lines(plan.removed), plan.added, lines(plan.added), touched, if (touched == 1) "document" else "documents",
+});
+for (plan.growth.items) |g| {
+    const label = g.block.label;
+    try ctx.out.print("needs prose: {s}:{d} ({s} of {s}) grew by {d} {s}\n", .{
+        built.docs[label.doc].path,
+        untangle.shifted(sorted, label.doc, label.line),
+        label.name orelse "file root",
+        label.file,
+        g.added,
+        lines(g.added),
+    });
+}
+for (plan.placements.items) |p| {
+    const doc = built.docs[p.doc].path;
+    const where = untangle.shifted(sorted, p.doc, p.doc_line);
+    switch (p.kind) {
+        .after_command => try ctx.out.print("placed at a boundary: {s}:{d} went after \"… {s}\" at {s}:{d}\n", .{ p.file, p.line, p.name, doc, where }),
+        .before_command => try ctx.out.print("placed at a boundary: {s}:{d} went before \"… {s}\" at {s}:{d}\n", .{ p.file, p.line, p.name, doc, where }),
+        .block_start => try ctx.out.print("placed at a boundary: {s}:{d} went to the start of the block at {s}:{d}\n", .{ p.file, p.line, doc, untangle.shifted(sorted, p.doc, p.block.label.line) }),
+        .block_end => try ctx.out.print("placed at a boundary: {s}:{d} went to the end of the block at {s}:{d}\n", .{ p.file, p.line, doc, untangle.shifted(sorted, p.doc, p.block.label.line) }),
+    }
+}
+----
+
+`sync` decides which way to go, as the spec's U7 says, and then runs `untangle` or `tangle` itself, with the same arguments. The decision is made by `sync.zig`, which compares hashes. This function gathers them.
+
+… syncCommand :file: main.zig
+[source,zig]
+----
+fn syncCommand(ctx: Context, args: []const []const u8) !u8 {
+    const options = (try parseOptions(ctx, args, .{})) orelse return 2;
+    if (!try documentsOk(ctx, options.positional)) return 2;
+    const built = (try build(ctx, options.positional)) orelse return 1;
+
+    var dir = Io.Dir.cwd().openDir(ctx.io, options.out_dir, .{}) catch |e| {
+        try ctx.err.print("{s}: {s}\n", .{ options.out_dir, @errorName(e) });
+        return 1;
+    };
+    defer dir.close(ctx.io);
+    const map_text = try output.readOrNull(ctx.io, ctx.arena, dir, output.map_path);
+    const previous: ?map.Map = if (map_text) |text| map.read(ctx.arena, text) catch null else null;
+
+    … sync, the state of each file
+    switch (sync.direction(states)) {
+        .in_sync => {
+            try ctx.out.writeAll("in sync\n");
+            return 0;
+        },
+        .untangle => {
+            try ctx.out.writeAll("the files changed: untangling\n");
+            return untangleCommand(ctx, args);
+        },
+        .tangle => {
+            try ctx.out.writeAll("the documents changed: tangling\n");
+            return tangleCommand(ctx, args);
+        },
+        … sync, both sides changed
+    }
+}
+----
+
+For every tangled file there are three hashes: the one in the map, that of the text the documents tangle to now, and that of the file on disk. A map that cannot be read is treated as missing.
+
+… sync, the state of each file :file: main.zig
+[source,zig]
+----
+const states = try ctx.arena.alloc(sync.FileState, built.files.len);
+for (built.files, states) |file, *state| {
+    const text = try output.readOrNull(ctx.io, ctx.arena, dir, file.path);
+    const recorded = if (previous) |p| (if (p.find(file.path)) |entry| entry.hash else null) else null;
+    const disk_hash: ?[]const u8 = if (text) |bytes| &map.hashHex(bytes) else null;
+    state.* = sync.stateOf(recorded, &map.hashHex(file.text), disk_hash);
+}
+----
+
+When both sides changed, or the direction is not known, nothing is done. Each file that is not in sync says why, and then `check`'s comparison shows the lines that differ, with the document lines they come from. Those are the excerpts the writer has to reconcile.
+
+… sync, both sides changed :file: main.zig
+[source,zig]
+----
+.stop => {
+    try ctx.err.writeAll("both sides changed, or it is not known which did; nothing was done\n");
+    for (built.files, states) |file, state| {
+        const what = switch (state) {
+            .in_sync => continue,
+            .files_changed => "the file changed",
+            .documents_changed => "the documents changed",
+            .both_changed => "the file and the documents changed",
+            .unknown => "there is no map entry, and the file differs from its tangled text",
+        };
+        try ctx.err.print("{s}: {s}\n", .{ file.path, what });
+    }
+    const differences = try compare.compare(ctx.io, ctx.arena, dir, built.docs, built.files);
+    for (differences) |difference| try difference.print(ctx.err);
+    return 1;
+},
+----
+
 `init` takes the same options as tangle, apart from `--force`. It is given the name Litmus was run as, because the paragraph it writes names that (I1).
 
 … initCommand :file: main.zig
 [source,zig]
 ----
 fn initCommand(ctx: Context, exe: []const u8, args: []const []const u8) !u8 {
-    const options = (try parseOptions(ctx, args, false)) orelse return 2;
+    const options = (try parseOptions(ctx, args, .{})) orelse return 2;
     if (!try documentsOk(ctx, options.positional)) return 2;
     return init_command.run(ctx.io, ctx.arena, .{ .exe = exe, .dir = options.out_dir, .documents = options.positional }, ctx.out, ctx.err);
 }
@@ -412,7 +685,7 @@ defer out.flush() catch {};
 defer err.flush() catch {};
 ----
 
-The first argument selects the command. An error that escapes a command, such as a failed write, is printed with its name and exits with 1.
+The first argument selects the command, and `untangle` and `sync` are the two newest. An error that escapes a command, such as a failed write, is printed with its name and exits with 1.
 
 … main, dispatch :file: main.zig
 [source,zig]
@@ -422,6 +695,8 @@ const code = run: {
     if (std.mem.eql(u8, command, "check")) break :run checkCommand(ctx, rest);
     if (std.mem.eql(u8, command, "where")) break :run whereCommand(ctx, rest);
     if (std.mem.eql(u8, command, "init")) break :run initCommand(ctx, args[0], rest);
+    if (std.mem.eql(u8, command, "untangle")) break :run untangleCommand(ctx, rest);
+    if (std.mem.eql(u8, command, "sync")) break :run syncCommand(ctx, rest);
     if (std.mem.eql(u8, command, "guide")) {
         try out.writeAll(guide_text);
         break :run 0;
@@ -603,7 +878,7 @@ const runs = [_]types.Run{
 };
 
 fn tangled(text: []const u8, executable: bool) tangle.Tangled {
-    return .{ .path = "a.txt", .executable = executable, .text = text, .runs = &runs };
+    return .{ .path = "a.txt", .executable = executable, .text = text, .runs = &runs, .expansions = &.{} };
 }
 
 fn compareText(tmp: *std.testing.TmpDir, a: Allocator, on_disk: ?[]const u8, file: tangle.Tangled) ![]const Difference {
@@ -619,7 +894,7 @@ test "check: equal files and a missing file" {
     const a = arena_state.allocator();
     try t.expectEqual(1, (try compareText(&tmp, a, null, tangled("x\n", false))).len);
     try t.expectEqual(0, (try compareText(&tmp, a, "x\ny\nz\n", tangled("x\ny\nz\n", false))).len);
-    const missing = (try compare(t.io, a, tmp.dir, &test_docs, &.{.{ .path = "b.txt", .executable = false, .text = "", .runs = &.{} }}))[0];
+    const missing = (try compare(t.io, a, tmp.dir, &test_docs, &.{.{ .path = "b.txt", .executable = false, .text = "", .runs = &.{}, .expansions = &.{} }}))[0];
     try t.expectEqual(.missing, missing.kind);
 }
 
@@ -750,7 +1025,7 @@ fn outputDir(dir: []const u8) ?[]const u8 {
 }
 ----
 
-The paragraph is a template with the pieces filled in. The command is called `litmus`, unless Litmus was run with a path (it has a slash), such as `tools/litmus`, in which case that path is used, so that the line works when Litmus is not on the `PATH`.
+The paragraph is a template with the pieces filled in. It tells agents to run `litmus guide`, to carry changes in tangled files into the documents with untangle, and to tangle and check. The command is called `litmus`, unless Litmus was run with a path (it has a slash), such as `tools/litmus`, in which case that path is used, so that the line works when Litmus is not on the `PATH`.
 
 … paragraph :file: init.zig
 [source,zig]
@@ -766,11 +1041,13 @@ pub fn paragraph(arena: Allocator, args: Args) ![]const u8 {
         \\{s}
         \\This project uses Litmus: some source files are tangled from documents that
         \\explain them. Run `{s} guide` before changing any file listed in
-        \\{s}.litmus/map. Tangle with `{s} tangle{s} {s}`, and make sure
+        \\{s}.litmus/map. After editing a tangled file, carry the change into the
+        \\documents with `{s} untangle{s} {s}`, and write the prose it asks for.
+        \\Tangle with `{s} tangle{s} {s}`, and make sure
         \\`{s} check{s} {s}` passes before finishing.
         \\{s}
         \\
-    , .{ start_marker, exe, map_dir, exe, flag, documents, exe, flag, documents, end_marker });
+    , .{ start_marker, exe, map_dir, exe, flag, documents, exe, flag, documents, exe, flag, documents, end_marker });
 }
 ----
 
@@ -913,7 +1190,7 @@ pub fn run(io: Io, arena: Allocator, args: Args, out: *Io.Writer, err: *Io.Write
 
 === Tests
 
-The tests cover the paragraph (with the current directory, another directory, and a path as the command), the creation of each file, adding to a file, replacing an old paragraph, an unclosed paragraph, a `CLAUDE.md` that has the import and one that has not, and `.gitignore` entries in their spellings. Running twice is tested in the golden tests of chapter 9, since that is about the files.
+The tests cover the paragraph (with the current directory, another directory, and a path as the command), the creation of each file, adding to a file, replacing an old paragraph, an unclosed paragraph, a `CLAUDE.md` that has the import and one that has not, and `.gitignore` entries in their spellings. Running twice is tested in the golden tests of chapter 10, since that is about the files.
 
 … tests :file: init.zig
 [source,zig]
@@ -934,14 +1211,17 @@ test "I1: the paragraph names the directory and the documents" {
         \\<!-- litmus -->
         \\This project uses Litmus: some source files are tangled from documents that
         \\explain them. Run `litmus guide` before changing any file listed in
-        \\.litmus/map. Tangle with `litmus tangle doc/a.adoc doc/b.md`, and make sure
+        \\.litmus/map. After editing a tangled file, carry the change into the
+        \\documents with `litmus untangle doc/a.adoc doc/b.md`, and write the prose it asks for.
+        \\Tangle with `litmus tangle doc/a.adoc doc/b.md`, and make sure
         \\`litmus check doc/a.adoc doc/b.md` passes before finishing.
         \\<!-- /litmus -->
         \\
     , try paragraph(a, testArgs(".", "litmus")));
     const other = try paragraph(a, testArgs("out/", "tools/litmus"));
     try t.expect(std.mem.indexOf(u8, other, "Run `tools/litmus guide` before") != null);
-    try t.expect(std.mem.indexOf(u8, other, "out/.litmus/map. Tangle with `tools/litmus tangle -o out doc/a.adoc doc/b.md`") != null);
+    try t.expect(std.mem.indexOf(u8, other, "documents with `tools/litmus untangle -o out doc/a.adoc doc/b.md`") != null);
+    try t.expect(std.mem.indexOf(u8, other, "Tangle with `tools/litmus tangle -o out doc/a.adoc doc/b.md`") != null);
     try t.expect(std.mem.indexOf(u8, other, "`tools/litmus check -o out doc/a.adoc doc/b.md` passes") != null);
 }
 
@@ -991,7 +1271,7 @@ test "I3: .gitignore gets the directory once" {
 
 === The guide
 
-The guide is what `litmus guide` prints. Agents read it before they change a tangled file. It tells them how to find their way (`.litmus/map`, `litmus where`), how to change code so that the documents and the files stay equal, and what never to do. It is written for an agent, in plain words and short sentences.
+The guide is what `litmus guide` prints. Agents read it before they change a tangled file. It tells them how to find their way (`.litmus/map`, `litmus where`), how to change code so that the documents and the files stay equal, and what never to do. Changing code now goes through untangle: the agent edits and tests the tangled file, runs untangle, writes the prose it asks for, and checks. The guide also says what to do when untangle cannot place a line, or finds that the documents changed too. It is written for an agent, in plain words and short sentences.
 
 The spec includes this file, so the text exists once.
 
@@ -1018,18 +1298,23 @@ Finding your way
 
 Changing code
 1. Edit the tangled file and test it as usual.
-2. Make the same change in the document's block: `litmus where` finds it.
-3. Put new code in a new block, labeled with its name and file, inserted by
-   exactly one `… name` line, with prose before it saying what it does and why.
+2. Run the untangle command from AGENTS.md. It carries the change into the
+   document's blocks, and lists the blocks that need prose.
+3. Write the prose for every block it lists: what the new code does and why.
+   If new code deserves a block of its own, put it in one, labeled with its name
+   and file and inserted by exactly one `… name` line.
 4. Run the check command from AGENTS.md. The change is done only when it passes.
 
 Never
 - edit .litmus/map;
-- run `litmus tangle --force` unless the user asks: it overwrites edits in
-  tangled files;
+- run `litmus tangle --force` or `litmus untangle --force` unless the user asks:
+  they skip the protection of edits;
 - start a line of code with `…` (U+2026);
 - leave a tangled file changed without the same change in its document.
 
+If untangle reports a line it cannot place, the line lost the indent of its
+excerpt: fix it in the tangled file and run untangle again. If it says that the
+documents changed too, run `litmus sync`, and if that stops as well, ask the user.
 If tangle refuses because a file changed since it was tangled, the change is not
-in the documents yet: carry it over (step 2), then check.
+in the documents yet: run untangle (step 2), then check.
 ----

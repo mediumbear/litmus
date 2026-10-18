@@ -15,7 +15,8 @@ document text
     resolve   (chapter 5)   group blocks into files and excerpts, and run the checks
     tangle    (chapter 6)   expand each file and record where its lines came from
     map, output (chapter 7) write the files and the map, without losing anyone's work
-    commands  (chapter 8)   tangle, check, where, guide and init
+    commands  (chapter 8)   tangle, check, where, guide, init, untangle and sync
+    untangle  (chapter 9)   carry edits of the files back into the documents
 ....
 
 The spec, `doc/litmus.adoc`, says what Litmus does. This book says how. Every behaviour traces to a rule of the spec, and the tests in this book name the rule they check: L for the language, T for tangle, C for the checks, M for Markdown and I for init. When the code needs something the spec does not say, the spec changes first.
@@ -61,6 +62,8 @@ The file starts with a note on what it holds, and imports the standard library.
 
 … Run
 
+… Expansion
+
 … Diagnostic
 
 … Diagnostics
@@ -83,7 +86,7 @@ Documents are either asciidoc or Markdown. The scanner defines the format, and t
 pub const Format = @import("scan.zig").Format;
 ----
 
-A `Document` is a path, a format, and the document's lines. Its `dir` is the directory that contains it, which is where `include::` paths start (L6). Not to be confused with `:litmus-dir:`, which sets where tangled files go (L8).
+A `Document` is a path, a format, and the document's lines. Its `dir` is the directory that contains it, which is where `include::` paths start (L6). Not to be confused with `:litmus-dir:`, which sets where tangled files go (L8). `final_newline` remembers whether the text ended with a newline. The lines alone cannot say, and untangle must write a document back exactly as it was.
 
 … Document :file: types.zig
 [source,zig]
@@ -95,6 +98,8 @@ pub const Document = struct {
     lines: []const []const u8,
     /// The directory of `path`, without a trailing `/`; empty for the current directory.
     dir: []const u8,
+    /// Whether the text ended with `\n`, so that the document can be written back as it was.
+    final_newline: bool = true,
 };
 ----
 
@@ -145,6 +150,8 @@ pub const Block = struct {
 
 A `Run` is the map's unit. While tangle expands a file, it notes each stretch of consecutive output lines that came from consecutive lines of one block, with the same indent. The map is a list of runs, and so is the answer to "where did this line come from".
 
+Two more fields are for untangle, and are not in the map: the block the run's lines are lines of, and the expansion the run is in, which is explained next. The map is made from the first six fields only.
+
 … Run :file: types.zig
 [source,zig]
 ----
@@ -159,6 +166,38 @@ pub const Run = struct {
     indent: u32,
     /// The excerpt's name, or `:file:` for the file root.
     excerpt: []const u8,
+    /// The expansion the run's lines are in, as an index into the file's expansions,
+    /// or `no_expansion` for the file root. Untangle needs it; the map does not.
+    expansion: u32 = no_expansion,
+    /// The block the run's lines are lines of.
+    block: ?*const Block = null,
+};
+----
+
+An `Expansion` is one excerpt command, as tangle expanded it. It records the output lines the command produced, the block that holds the command and the command's place in it, and the indents: the command's own and those of the commands around it, put together, with how many of the bytes belong to the ones around. Untangle uses expansions to decide where a line that was added between two runs belongs, and what indent it has to carry. They live only in memory.
+
+A run in the file root is in no expansion, and says so with `no_expansion`.
+
+… Expansion :file: types.zig
+[source,zig]
+----
+pub const no_expansion = std.math.maxInt(u32);
+
+/// One excerpt command, expanded while tangling a file.
+pub const Expansion = struct {
+    /// The output lines it produced, counting from 1. An excerpt with no lines has
+    /// `last_line` one less than `first_line`.
+    first_line: u32,
+    last_line: u32,
+    /// The block that holds the command, and the command's index in it.
+    block: *const Block,
+    command: u32,
+    /// The indents of this command and all the commands around it, put together.
+    prefix: []const u8,
+    /// How many of those bytes belong to the commands around it, not to this one.
+    outer_len: u32,
+    /// How many expansions it is inside of.
+    depth: u32,
 };
 ----
 
