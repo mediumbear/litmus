@@ -10,6 +10,7 @@ const output = @import("output.zig");
 const compare = @import("compare.zig");
 const init_command = @import("init.zig");
 const untangle = @import("untangle.zig");
+const sync = @import("sync.zig");
 
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
@@ -21,6 +22,7 @@ const usage =
     \\       litmus guide
     \\       litmus init [-o DIR] DOCUMENT...
     \\       litmus untangle [-o DIR] [-f FILE]... [--force] DOCUMENT...
+    \\       litmus sync [-o DIR] DOCUMENT...
     \\
 ;
 
@@ -339,6 +341,58 @@ fn untangleCommand(ctx: Context, args: []const []const u8) !u8 {
     return 0;
 }
 
+fn syncCommand(ctx: Context, args: []const []const u8) !u8 {
+    const options = (try parseOptions(ctx, args, .{})) orelse return 2;
+    if (!try documentsOk(ctx, options.positional)) return 2;
+    const built = (try build(ctx, options.positional)) orelse return 1;
+
+    var dir = Io.Dir.cwd().openDir(ctx.io, options.out_dir, .{}) catch |e| {
+        try ctx.err.print("{s}: {s}\n", .{ options.out_dir, @errorName(e) });
+        return 1;
+    };
+    defer dir.close(ctx.io);
+    const map_text = try output.readOrNull(ctx.io, ctx.arena, dir, output.map_path);
+    const previous: ?map.Map = if (map_text) |text| map.read(ctx.arena, text) catch null else null;
+
+    const states = try ctx.arena.alloc(sync.FileState, built.files.len);
+    for (built.files, states) |file, *state| {
+        const text = try output.readOrNull(ctx.io, ctx.arena, dir, file.path);
+        const recorded = if (previous) |p| (if (p.find(file.path)) |entry| entry.hash else null) else null;
+        const disk_hash: ?[]const u8 = if (text) |bytes| &map.hashHex(bytes) else null;
+        state.* = sync.stateOf(recorded, &map.hashHex(file.text), disk_hash);
+    }
+    switch (sync.direction(states)) {
+        .in_sync => {
+            try ctx.out.writeAll("in sync\n");
+            return 0;
+        },
+        .untangle => {
+            try ctx.out.writeAll("the files changed: untangling\n");
+            return untangleCommand(ctx, args);
+        },
+        .tangle => {
+            try ctx.out.writeAll("the documents changed: tangling\n");
+            return tangleCommand(ctx, args);
+        },
+        .stop => {
+            try ctx.err.writeAll("both sides changed, or it is not known which did; nothing was done\n");
+            for (built.files, states) |file, state| {
+                const what = switch (state) {
+                    .in_sync => continue,
+                    .files_changed => "the file changed",
+                    .documents_changed => "the documents changed",
+                    .both_changed => "the file and the documents changed",
+                    .unknown => "there is no map entry, and the file differs from its tangled text",
+                };
+                try ctx.err.print("{s}: {s}\n", .{ file.path, what });
+            }
+            const differences = try compare.compare(ctx.io, ctx.arena, dir, built.docs, built.files);
+            for (differences) |difference| try difference.print(ctx.err);
+            return 1;
+        },
+    }
+}
+
 fn initCommand(ctx: Context, exe: []const u8, args: []const []const u8) !u8 {
     const options = (try parseOptions(ctx, args, .{})) orelse return 2;
     if (!try documentsOk(ctx, options.positional)) return 2;
@@ -372,6 +426,7 @@ pub fn main(init: std.process.Init) !u8 {
         if (std.mem.eql(u8, command, "where")) break :run whereCommand(ctx, rest);
         if (std.mem.eql(u8, command, "init")) break :run initCommand(ctx, args[0], rest);
         if (std.mem.eql(u8, command, "untangle")) break :run untangleCommand(ctx, rest);
+        if (std.mem.eql(u8, command, "sync")) break :run syncCommand(ctx, rest);
         if (std.mem.eql(u8, command, "guide")) {
             try out.writeAll(guide_text);
             break :run 0;

@@ -12,4 +12,5 @@ test {
     _ = @import("init.zig");
     _ = @import("diff.zig");
     _ = @import("untangle.zig");
+    _ = @import("sync.zig");
 }
