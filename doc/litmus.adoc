@@ -138,7 +138,7 @@ Each of these is an error, reported as `document:line: message`. If there is any
 
 *Check C10.* A document includes itself, directly or through other documents, is in the document set twice, or names a document that does not exist.
 
-*Check C11.* A document command has no `:file:`, or has an attribute other than `:file:` and `:executable:`.
+*Check C11.* A document command has no `:file:`, has `:file:` twice, has an attribute other than `:file:` and `:executable:`, or has a name that starts with `:`.
 
 C2 and C3 together mean that every excerpt is used exactly once. Then every line of every file comes from exactly one line of the document set, and every line of labeled code lands in exactly one place. Tangle can be run backwards, which is what makes untangle exact.
 
