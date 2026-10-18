@@ -102,6 +102,64 @@ module LitmusWeave
       </style>
     CSS
 
+    # Marks the section being read in the table of contents, keeps it in view, and has a
+    # button that brings the table of contents to the section being read.
+    SPY = <<~HTML
+      <style>
+      #toc a.lm-current { background: #e0e7ff; color: #1e3a8a; font-weight: 600; border-radius: 3px; }
+      #lm-sync { position: fixed; top: 8px; left: 292px; z-index: 20; font: 12px system-ui, sans-serif; padding: 3px 9px;
+        border: 1px solid #c7d2fe; border-radius: 12px; background: #eef2ff; color: #3730a3; cursor: pointer; opacity: .9; }
+      #lm-sync:hover { background: #e0e7ff; opacity: 1; }
+      #toc a.lm-flash { animation: lm-flash 1.2s; }
+      @keyframes lm-flash { 0%, 60% { background: #fde68a; } 100% { background: #e0e7ff; } }
+      </style>
+      <script>
+      document.addEventListener('DOMContentLoaded', function () {
+        var toc = document.getElementById('toc');
+        if (!toc) return;
+        var links = {};
+        toc.querySelectorAll('a[href^="#"]').forEach(function (a) { links[a.getAttribute('href').slice(1)] = a; });
+        var heads = [];
+        document.querySelectorAll('#content h2[id], #content h3[id], #content h4[id]').forEach(function (h) { if (links[h.id]) heads.push(h); });
+        if (!heads.length) return;
+        var current = null, ticking = false;
+        function find() {
+          var found = heads[0];
+          for (var i = 0; i < heads.length; i++) { if (heads[i].getBoundingClientRect().top <= 90) found = heads[i]; else break; }
+          return found;
+        }
+        function reveal(link, centre) {
+          var box = toc.getBoundingClientRect(), r = link.getBoundingClientRect();
+          if (centre || r.top < box.top + 30 || r.bottom > box.bottom - 30) {
+            toc.scrollTop += r.top - box.top - box.height / 2;
+          }
+        }
+        function update() {
+          ticking = false;
+          var h = find();
+          if (h === current) return;
+          if (current) links[current.id].classList.remove('lm-current');
+          current = h;
+          links[h.id].classList.add('lm-current');
+          reveal(links[h.id], false);
+        }
+        window.addEventListener('scroll', function () { if (!ticking) { ticking = true; requestAnimationFrame(update); } }, { passive: true });
+        var b = document.createElement('button');
+        b.id = 'lm-sync'; b.type = 'button'; b.textContent = '\u2316 sync'; b.title = 'Show this section in the table of contents';
+        b.onclick = function () {
+          update();
+          if (!current) return;
+          var a = links[current.id];
+          reveal(a, true);
+          a.classList.remove('lm-flash'); void a.offsetWidth; a.classList.add('lm-flash');
+        };
+        document.body.appendChild(b);
+        update();
+        reveal(links[current.id], true);
+      });
+      </script>
+    HTML
+
     def process(doc, output)
       listings = Tree.listings
       pattern = /(<div class="listingblock[^"]*\blm-(\d+)\b[^"]*">\s*<div class="content">\s*<pre[^>]*>(?:<code[^>]*>)?)(.*?)((?:<\/code>)?<\/pre>)/m
@@ -123,7 +181,7 @@ module LitmusWeave
         end
         head + lines.join("\n") + tail
       end
-      head = STYLE
+      head = STYLE + SPY
       # Diagrams written as `<pre class="mermaid">` in a passthrough block are drawn in the
       # browser by Mermaid.
       if output.include?('class="mermaid"')
