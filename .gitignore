@@ -1,2 +1,6 @@
 doc/build/
 .DS_Store
+tools/
+zig-out/
+.zig-cache/
+.litmus/
