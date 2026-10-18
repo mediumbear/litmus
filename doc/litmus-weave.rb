@@ -103,7 +103,7 @@ module LitmusWeave
 
     def process(doc, output)
       listings = Tree.listings
-      pattern = /(<div class="listingblock[^"]*\blm-(\d+)\b[^"]*">.*?<pre[^>]*><code[^>]*>)(.*?)(<\/code><\/pre>)/m
+      pattern = /(<div class="listingblock[^"]*\blm-(\d+)\b[^"]*">\s*<div class="content">\s*<pre[^>]*>(?:<code[^>]*>)?)(.*?)((?:<\/code>)?<\/pre>)/m
       output = output.gsub(pattern) do
         head, n, code, tail = $1, $2.to_i, $3, $4
         info = listings[n]
