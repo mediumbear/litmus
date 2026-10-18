@@ -274,8 +274,8 @@ test "C4: a cycle, even one that no root reaches" {
     const d = try check(a, "… :file: a\n----\n----\n… p :file: a\n----\n… q\n----\n… q :file: a\n----\n… p\n----\n");
     try d.expect(10, "C4");
     try d.expectCount(1);
-    const e = try check(a, "… :file: a\n----\n… s\n----\n… s :file: a\n----\n… s\n----\n");
-    try e.expect(7, "C4");
+    const e = try check(a, "… :file: a\n----\n----\n… s :file: a\n----\n… s\n----\n");
+    try e.expect(6, "C4");
     try e.expectCount(1);
 }
 
