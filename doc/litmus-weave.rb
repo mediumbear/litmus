@@ -107,7 +107,7 @@ module LitmusWeave
     SPY = <<~HTML
       <style>
       #toc a.lm-current { background: #e0e7ff; color: #1e3a8a; font-weight: 600; border-radius: 3px; }
-      #lm-sync { position: fixed; top: 8px; left: 292px; z-index: 20; font: 12px system-ui, sans-serif; padding: 3px 9px;
+      #lm-sync { position: fixed; top: 8px; left: 8px; z-index: 20; font: 12px system-ui, sans-serif; padding: 3px 9px;
         border: 1px solid #c7d2fe; border-radius: 12px; background: #eef2ff; color: #3730a3; cursor: pointer; opacity: .9; }
       #lm-sync:hover { background: #e0e7ff; opacity: 1; }
       #toc a.lm-flash { animation: lm-flash 1.2s; }
@@ -154,6 +154,16 @@ module LitmusWeave
           a.classList.remove('lm-flash'); void a.offsetWidth; a.classList.add('lm-flash');
         };
         document.body.appendChild(b);
+        // Beside the table of contents, wherever its edge is; at the left edge when the table
+        // of contents is not a column.
+        function place() {
+          var box = toc.getBoundingClientRect();
+          var column = getComputedStyle(toc).position === 'fixed';
+          b.style.left = (column ? box.right + 12 : 8) + 'px';
+        }
+        place();
+        window.addEventListener('resize', place);
+        window.addEventListener('load', place);
         update();
         reveal(links[current.id], true);
       });
