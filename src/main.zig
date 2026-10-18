@@ -131,6 +131,15 @@ fn next(ctx: Context, comptime fmt: []const u8, args: anytype) !void {
     try ctx.out.print("next: " ++ fmt ++ "\n", args);
 }
 
+/// The map is rewritten when the documents moved without their code changing, such as when prose
+/// was written: it holds document lines (R2). Writes nothing if it is already right.
+fn refreshMap(ctx: Context, built: Built, map_dir: Io.Dir, old_text: ?[]const u8) !bool {
+    const new_map = try map.render(ctx.arena, built.docs, built.files);
+    if (old_text) |old| if (std.mem.eql(u8, old, new_map)) return false;
+    try output.writeAtomic(ctx.io, map_dir, output.map_path, new_map, false);
+    return true;
+}
+
 /// The directory that holds the map: `DIR`, or for a companion the directory of the first
 /// document (R2).
 fn mapDirPath(options: Options, companion: bool) []const u8 {
@@ -365,6 +374,7 @@ fn untangleCommand(ctx: Context, args: []const []const u8) !u8 {
     }
     if (plan.edits.items.len == 0) {
         try ctx.out.writeAll("nothing to untangle\n");
+        if (try refreshMap(ctx, built, map_dir, map_text)) try ctx.out.writeAll("updated the map\n");
         try next(ctx, "nothing", .{});
         return 0;
     }
@@ -473,6 +483,7 @@ fn syncOnce(ctx: Context, options: Options, args: []const []const u8) !SyncResul
     switch (sync.direction(states)) {
         .in_sync => {
             try ctx.out.writeAll("in sync\n");
+            if (try refreshMap(ctx, built, map_dir, map_text)) try ctx.out.writeAll("updated the map\n");
             try next(ctx, "nothing", .{});
             return .{ .code = 0, .watched = watched };
         },

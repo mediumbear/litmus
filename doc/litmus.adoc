@@ -322,7 +322,7 @@ A companion document explains code that it does not own: code someone else wrote
 
 *Rule R1.* A document set is a companion if any of its documents says `:litmus-companion:` (L11).
 
-*Rule R2.* A companion's map is kept in `.litmus/map` in the directory of the first document named on the command line, not under `DIR`. Nothing is ever written under `DIR`.
+*Rule R2.* A companion's map is kept in `.litmus/map` in the directory of the first document named on the command line, not under `DIR`. Nothing is ever written under `DIR`. The map holds document lines, so it is rewritten whenever the documents moved and nothing else changed, such as when prose was written or blocks were moved: untangle and sync do so when they find nothing to carry over.
 
 *Rule R3.* Tangle refuses to tangle a companion.
 

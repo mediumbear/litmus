@@ -1,0 +1,1 @@
+litmus adopt -o code --companion notes/c.adoc . && perl -0pi -e 's/== counter.zig/Some prose first.\n\n== counter.zig/' notes/c.adoc && litmus sync -o code notes/c.adoc && litmus where -o code notes/c.adoc counter.zig:5

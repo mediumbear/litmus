@@ -57,6 +57,10 @@ Prints the style file that applies to each document.
 
 … next
 
+… refreshMap
+
+… mapDirPath
+
 … documentsOk
 
 … tangleCommand
@@ -254,7 +258,7 @@ const Built = struct {
 };
 ----
 
-Two small helpers come next. `next` prints the line that ends what untangle, sync, watch and adopt print: what to do next, in words an agent can act on (N1). `mapDirPath` says where the map is: under the output directory, or for a companion beside its first document, so that nothing is ever written under the code it explains (R2).
+Three small helpers come next. `next` prints the line that ends what untangle, sync, watch and adopt print: what to do next, in words an agent can act on (N1).
 
 … next :file: main.zig
 [source,zig]
@@ -263,7 +267,28 @@ Two small helpers come next. `next` prints the line that ends what untangle, syn
 fn next(ctx: Context, comptime fmt: []const u8, args: anytype) !void {
     try ctx.out.print("next: " ++ fmt ++ "\n", args);
 }
+----
 
+A companion's map holds document lines, and a writer who writes prose, or moves blocks, moves them without changing any code. Then nothing needs carrying over, but the map is out of date, and `where` would answer with old lines. `refreshMap` rewrites it when it differs from what the documents give now, and does nothing otherwise. Untangle calls it when it finds nothing to carry over, and so does sync when everything is in sync (R2).
+
+… refreshMap :file: main.zig
+[source,zig]
+----
+/// The map is rewritten when the documents moved without their code changing, such as when prose
+/// was written: it holds document lines (R2). Writes nothing if it is already right.
+fn refreshMap(ctx: Context, built: Built, map_dir: Io.Dir, old_text: ?[]const u8) !bool {
+    const new_map = try map.render(ctx.arena, built.docs, built.files);
+    if (old_text) |old| if (std.mem.eql(u8, old, new_map)) return false;
+    try output.writeAtomic(ctx.io, map_dir, output.map_path, new_map, false);
+    return true;
+}
+----
+
+`mapDirPath` says where the map is: under the output directory, or for a companion beside its first document, so that nothing is ever written under the code it explains (R2).
+
+… mapDirPath :file: main.zig
+[source,zig]
+----
 /// The directory that holds the map: `DIR`, or for a companion the directory of the first
 /// document (R2).
 fn mapDirPath(options: Options, companion: bool) []const u8 {
@@ -580,7 +605,7 @@ if (!options.force) {
 }
 ----
 
-Then each tangled file is read, and the ones that differ from the base are planned (U2 to U6). A file that is missing is reported and left alone (U3). The files named with `-f` that the map does not list are reported (U8). Anything the plan could not place is printed, in the form `file:line: message`, and stops the command with nothing written (U5).
+Then each tangled file is read, and the ones that differ from the base are planned (U2 to U6). If there is nothing to carry over, the map is still brought up to date, since the documents may have moved (R2). A file that is missing is reported and left alone (U3). The files named with `-f` that the map does not list are reported (U8). Anything the plan could not place is printed, in the form `file:line: message`, and stops the command with nothing written (U5).
 
 … untangle, plan the edits :file: main.zig
 [source,zig]
@@ -615,6 +640,7 @@ if (unknown) {
 }
 if (plan.edits.items.len == 0) {
     try ctx.out.writeAll("nothing to untangle\n");
+    if (try refreshMap(ctx, built, map_dir, map_text)) try ctx.out.writeAll("updated the map\n");
     try next(ctx, "nothing", .{});
     return 0;
 }
@@ -694,7 +720,7 @@ for (plan.placements.items) |p| {
 }
 ----
 
-`syncOnce` is one run of sync. It reads the map from where the set keeps it (R2), and a companion whose code changed in the document is not tangled: it says so, shows the differences, and says to undo them or to take the code's version (R5). It decides which way to go, as the spec's U7 says, and then runs `untangle` or `tangle` itself, with the same arguments. The decision is made by `sync.zig`, which compares hashes. This function gathers them. It gives back an exit code and the list of files that a watcher has to look at: the documents of the set, and the tangled files (W2).
+`syncOnce` is one run of sync. It reads the map from where the set keeps it (R2), brings it up to date when everything is in sync, and a companion whose code changed in the document is not tangled: it says so, shows the differences, and says to undo them or to take the code's version (R5). It decides which way to go, as the spec's U7 says, and then runs `untangle` or `tangle` itself, with the same arguments. The decision is made by `sync.zig`, which compares hashes. This function gathers them. It gives back an exit code and the list of files that a watcher has to look at: the documents of the set, and the tangled files (W2).
 
 … syncOnce :file: main.zig
 [source,zig]
@@ -730,6 +756,7 @@ fn syncOnce(ctx: Context, options: Options, args: []const []const u8) !SyncResul
     switch (sync.direction(states)) {
         .in_sync => {
             try ctx.out.writeAll("in sync\n");
+            if (try refreshMap(ctx, built, map_dir, map_text)) try ctx.out.writeAll("updated the map\n");
             try next(ctx, "nothing", .{});
             return .{ .code = 0, .watched = watched };
         },
