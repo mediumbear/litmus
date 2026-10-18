@@ -191,6 +191,12 @@ Prints the guide for agents, below.
 `litmus init [-o DIR] DOCUMENT...`::
 Prepares the project in the current directory for agents. See <<init>>.
 
+`litmus untangle [-o DIR] [-f FILE]... DOCUMENT...`::
+Carries the changes in the source files back into the documents, and reports where prose is needed. See <<untangle>>.
+
+`litmus sync [-o DIR] DOCUMENT...`::
+Does whichever of tangle and untangle the state of the files and the documents calls for (U7). It exits with 1 if both changed.
+
 Document paths are recorded in the map as they were given, so Litmus is run from the same directory each time, normally the project's root.
 
 [[guide]]
@@ -226,25 +232,50 @@ DIR/.litmus/map. Tangle with `litmus tangle -o DIR DOCUMENT...`, and make sure
 
 *Rule I4.* Init creates any of these files that are missing, changes nothing else, and prints each change it makes. Running it twice changes nothing the second time.
 
+[[untangle]]
 == Untangle
 
-Untangle comes next. Its rules are written here so that tangle and the map serve it.
+Untangle carries changes made in the tangled files back into the documents. The writer, or the agent, edits and tests the code in the source files as usual, runs `litmus untangle`, and the blocks of the documents hold the change. The prose is still the writer's: untangle reports where it is needed.
 
-*Rule U1.* The base is the document set tangled in memory. If the base equals the source files, there is nothing to do.
+It works because every line of a tangled file comes from exactly one line of the document set (C2, C3), and the map says which. Whatever it does, it ends with a check (U9), so the documents it writes always tangle to the files.
+
+An example. After tangling the document of the example above, a writer edits `hello.zig`. The greeting changes, and a line is added to `main`:
+
+[source,zig]
+----
+const std = @import("std");
+
+pub fn main() void {
+    std.debug.print("Hello, world!\n", .{});
+    std.debug.print("Bye.\n", .{});
+}
+----
+
+The changed line came from the block of `greet`, so the block changes (U3). The added line sits between two lines of different runs: the end of `greet` and the `}` of the root block. It goes after the command `… greet` in the root block, where the indent of the line allows it (U4). Untangle prints:
+
+....
+changed 1 line, added 1 line in 1 document
+needs prose: hello.adoc:7 (file root of hello.zig) grew by 1 line
+placed at a boundary: hello.zig:5, after "… greet" at hello.adoc:9
+....
+
+*Rule U1.* The base is the document set tangled in memory. If the base equals the source files, there is nothing to do. If the base differs from what the map says tangle last wrote, the documents changed as well, and untangle stops (U7).
 
 *Rule U2.* Each file of the base is compared with the source file, line by line.
 
-*Rule U3.* A changed or removed line is changed or removed at the document line it came from.
+*Rule U3.* A changed or removed line is changed or removed at the document line it came from. A source file that the map lists but that is missing is reported, and left alone.
 
-*Rule U4.* A line added between two lines of the same run goes into that block. A line added where two runs meet goes into the outer block, the one holding the excerpt command, next to that command. It is listed in the report, since the writer may want it elsewhere.
+*Rule U4.* A line added between two lines of the same run goes into that block, at that place. A line added anywhere else goes into the block that holds an excerpt command, next to that command: after it where an excerpt ends, before it where an excerpt begins. If several commands are at that place, the innermost one whose block's indent the line starts with is taken. An empty line goes with the outermost. A line added at the start or the end of a file, or between two blocks of one excerpt, goes at the start of the block that follows, or at the end of the block that comes before. Every such line is listed in the report, since the writer may want it elsewhere.
 
-*Rule U5.* A changed or added line inside an excerpt that no longer starts with the excerpt command's indent is reported, not guessed.
+*Rule U5.* A changed or added line inside an excerpt that no longer starts with the excerpt command's indent is reported, not guessed. If anything is reported, untangle writes nothing.
 
 *Rule U6.* Untangle reports every block that grew, as _needs prose_. That list is the writer's work before a change is done.
 
-*Rule U7.* Git decides the direction. If only the source files differ from `HEAD`, untangle. If only the code in the documents differs, tangle. If both differ, stop and report the excerpts involved. Prose changes never count.
+*Rule U7.* The map decides the direction, and `litmus sync` follows it. Files differ from the map if their hash is not the one the map recorded. Documents differ from the map if the document set tangled in memory has a different hash. If only the files differ, untangle. If only the documents differ, tangle. If both differ, stop and report the files and the excerpts involved. Prose changes never count. Without a map, a file that equals its tangled text is unchanged, and a file that differs is reported, since the direction is not known.
 
-*Rule U8.* A source file that is not in the map is reported. Untangle does not invent a document for it.
+*Rule U8.* A source file named with `-f` that is not in the map is reported. Untangle does not invent a document for it. Untangle looks only at the files in the map and those named.
+
+*Rule U9.* Untangle writes the documents only if the edited documents, tangled in memory, equal the files on disk byte for byte. Otherwise it reports the first difference and writes nothing.
 
 == Watch
 
