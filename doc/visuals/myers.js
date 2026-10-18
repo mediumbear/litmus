@@ -206,7 +206,7 @@
       if (!trimmed) x = ox + (i + 0.5) * cell * (r.n / Math.max(1, r.base.length));
       else if (i < r.start) x = ox - 22 - (r.start - 1 - i) * 18;
       else if (!inMiddle) x = ox + gridW + 22 + (i - (r.base.length - r.end)) * 18;
-      else x = px(mi) + cell / 2;
+      else x = px(mi);
       const color = trimmed && !inMiddle ? colors.trimmed : (stage >= 6 && r.deleted[mi] ? colors.deletedChip : colors.text);
       chip(line, x, oy - 22, color, false);
     });
@@ -217,7 +217,7 @@
       if (!trimmed) y = oy + (j + 0.5) * cell * (r.m / Math.max(1, r.changed.length));
       else if (j < r.start) y = oy - 4 - (r.start - j) * 18 + 4;
       else if (!inMiddle) y = oy + gridH + 18 + (j - (r.changed.length - r.end)) * 18;
-      else y = py(mj) + cell / 2;
+      else y = py(mj);
       const color = trimmed && !inMiddle ? colors.trimmed : (stage >= 6 && r.inserted[mj] ? colors.insertedChip : colors.text);
       chip(line, trimmed && !inMiddle ? ox - 52 : ox - 30, y, color, false);
     });
