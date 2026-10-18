@@ -1,0 +1,6 @@
+top
+  one
+  new
+  two
+  deep
+end

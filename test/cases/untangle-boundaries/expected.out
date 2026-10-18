@@ -1,0 +1,7 @@
+changed 0 lines, removed 0 lines, added 4 lines, in 1 document
+needs prose: ex.adoc:1 (file root of f.txt) grew by 2 lines
+needs prose: ex.adoc:10 (e of f.txt) grew by 2 lines
+placed at a boundary: f.txt:1 went to the start of the block at ex.adoc:1
+placed at a boundary: f.txt:5 went before "… f" at ex.adoc:15
+placed at a boundary: f.txt:7 went after "… f" at ex.adoc:15
+placed at a boundary: f.txt:9 went to the end of the block at ex.adoc:1

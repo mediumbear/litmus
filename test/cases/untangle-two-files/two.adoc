@@ -1,0 +1,15 @@
+… :file: a.txt
+----
+a1
+… ae
+----
+
+… ae :file: a.txt
+----
+a2
+----
+
+… :file: b.txt
+----
+b1
+----

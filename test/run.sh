@@ -43,6 +43,39 @@ run_init() {
   return $code
 }
 
+# A case with an `edit` directory is an untangle case. The documents are tangled into the
+# output, or the output starts as `before`. Then the files of `edit` are copied over the
+# output, those named in `remove` are removed, and untangle has to give the documents
+# in `expected`. Options for untangle go in `options`.
+untangle_case() {
+  local dir=$1 name=$2 sandbox=$work/sandbox out=$work/out args options="" want_exit=0 code path
+  rm -rf "$sandbox" "$out" && mkdir -p "$sandbox" "$out"
+  cp -R "$dir/." "$sandbox/"
+  (cd "$sandbox" && rm -rf edit expected before remove expected.out expected.err args exit options)
+  [ -f "$dir/exit" ] && want_exit=$(cat "$dir/exit")
+  [ -f "$dir/options" ] && options=$(cat "$dir/options")
+  args=$(cat "$dir/args")
+  if [ -d "$dir/before" ]; then
+    cp -R "$dir/before/." "$out/"
+  else
+    (cd "$sandbox" && "$litmus" tangle -o "$out" $args) > /dev/null 2>&1 || fail "$name" "the documents do not tangle"
+  fi
+  cp -R "$dir/edit/." "$out/"
+  [ -f "$dir/remove" ] && while read -r path; do rm -f "$out/$path"; done < "$dir/remove"
+  (cd "$sandbox" && "$litmus" untangle -o "$out" $options $args) > "$work/stdout" 2> "$work/stderr"
+  code=$?
+  [ "$code" -eq "$want_exit" ] || fail "$name" "untangle exited $code, not $want_exit"
+  expect_same "$name (the documents)" "$sandbox" "$dir/expected"
+  expect_same "$name (what untangle prints)" "$work/stdout" "$( [ -f "$dir/expected.out" ] && echo "$dir/expected.out" || echo /dev/null )"
+  expect_same "$name (what untangle says)" "$work/stderr" "$( [ -f "$dir/expected.err" ] && echo "$dir/expected.err" || echo /dev/null )"
+  [ "$want_exit" -eq 0 ] || return
+  # The documents tangle to the files, and a second untangle has nothing to do. A file that
+  # was removed stays missing.
+  [ -f "$dir/remove" ] || (cd "$sandbox" && "$litmus" check -o "$out" $args) > /dev/null 2> "$work/stderr" || fail "$name" "check failed after untangle: $(cat "$work/stderr")"
+  (cd "$sandbox" && "$litmus" untangle -o "$out" $options $args) > "$work/stdout" 2> /dev/null
+  [ "$(cat "$work/stdout")" = "nothing to untangle" ] || fail "$name" "the second untangle said: $(cat "$work/stdout")"
+}
+
 # A case with a `cmd` file is an init case. The others are tangle cases.
 init_case() {
   local dir=$1 name=$2 sandbox=$work/sandbox cmd
@@ -116,7 +149,13 @@ cases() {
     dir=${dir%/}
     name=$(basename "$dir")
     count=$((count + 1))
-    if [ -f "$dir/cmd" ]; then init_case "$dir" "$name"; else tangle_case "$dir" "$name"; fi
+    if [ -f "$dir/cmd" ]; then
+      init_case "$dir" "$name"
+    elif [ -d "$dir/edit" ]; then
+      untangle_case "$dir" "$name"
+    else
+      tangle_case "$dir" "$name"
+    fi
   done
   echo "cases: $count run"
   speed
@@ -145,6 +184,10 @@ speed() {
   echo "speed: tangled $lines lines in about $((end - start)) s (whole seconds)"
   TIMEFORMAT='speed: %R s of wall time for the same tangle, second run'
   time (cd "$big" && "$litmus" tangle -o out2 big.adoc) > /dev/null
+  # And untangling one changed line of it.
+  awk 'NR == 50000 { print "    a changed line"; next } { print }' "$big/out/big.txt" > "$big/out/big.tmp" && mv "$big/out/big.tmp" "$big/out/big.txt"
+  TIMEFORMAT='speed: %R s of wall time to untangle one changed line'
+  time (cd "$big" && "$litmus" untangle -o out big.adoc) > /dev/null
 }
 
 # The fixed point: the book tangles to the repository, a Litmus built from that tangles it again.

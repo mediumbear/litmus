@@ -1,0 +1,15 @@
+… :file: all.txt
+----
+start
+… one
+one more
+… two
+end
+----
+
+include::part.adoc[]
+
+… two :file: all.txt
+----
+two
+----

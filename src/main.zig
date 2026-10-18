@@ -241,12 +241,12 @@ fn untangleCommand(ctx: Context, args: []const []const u8) !u8 {
     // U1, U7: the documents must not have changed since tangle wrote the files.
     const map_text = try output.readOrNull(ctx.io, ctx.arena, dir, output.map_path);
     const previous: ?map.Map = if (map_text) |text| map.read(ctx.arena, text) catch {
-        try ctx.err.print("{s}/{s} cannot be read; tangle first, or untangle with --force\n", .{ options.out_dir, output.map_path });
+        try ctx.err.print("the map ({s}) cannot be read; tangle first, or untangle with --force\n", .{output.map_path});
         return 1;
     } else null;
     if (!options.force) {
         if (previous == null) {
-            try ctx.err.print("{s}/{s} does not exist, so it is not known whether the documents or the files changed; run litmus tangle, or untangle with --force\n", .{ options.out_dir, output.map_path });
+            try ctx.err.print("there is no map ({s}), so it is not known whether the documents or the files changed; run litmus tangle, or untangle with --force\n", .{output.map_path});
             return 1;
         }
         var stale = false;

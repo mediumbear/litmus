@@ -37,11 +37,13 @@ pub fn paragraph(arena: Allocator, args: Args) ![]const u8 {
         \\{s}
         \\This project uses Litmus: some source files are tangled from documents that
         \\explain them. Run `{s} guide` before changing any file listed in
-        \\{s}.litmus/map. Tangle with `{s} tangle{s} {s}`, and make sure
+        \\{s}.litmus/map. After editing a tangled file, carry the change into the
+        \\documents with `{s} untangle{s} {s}`, and write the prose it asks for.
+        \\Tangle with `{s} tangle{s} {s}`, and make sure
         \\`{s} check{s} {s}` passes before finishing.
         \\{s}
         \\
-    , .{ start_marker, exe, map_dir, exe, flag, documents, exe, flag, documents, end_marker });
+    , .{ start_marker, exe, map_dir, exe, flag, documents, exe, flag, documents, exe, flag, documents, end_marker });
 }
 
 /// The text with a final `\n`, and `addition` after it.
@@ -157,14 +159,17 @@ test "I1: the paragraph names the directory and the documents" {
         \\<!-- litmus -->
         \\This project uses Litmus: some source files are tangled from documents that
         \\explain them. Run `litmus guide` before changing any file listed in
-        \\.litmus/map. Tangle with `litmus tangle doc/a.adoc doc/b.md`, and make sure
+        \\.litmus/map. After editing a tangled file, carry the change into the
+        \\documents with `litmus untangle doc/a.adoc doc/b.md`, and write the prose it asks for.
+        \\Tangle with `litmus tangle doc/a.adoc doc/b.md`, and make sure
         \\`litmus check doc/a.adoc doc/b.md` passes before finishing.
         \\<!-- /litmus -->
         \\
     , try paragraph(a, testArgs(".", "litmus")));
     const other = try paragraph(a, testArgs("out/", "tools/litmus"));
     try t.expect(std.mem.indexOf(u8, other, "Run `tools/litmus guide` before") != null);
-    try t.expect(std.mem.indexOf(u8, other, "out/.litmus/map. Tangle with `tools/litmus tangle -o out doc/a.adoc doc/b.md`") != null);
+    try t.expect(std.mem.indexOf(u8, other, "documents with `tools/litmus untangle -o out doc/a.adoc doc/b.md`") != null);
+    try t.expect(std.mem.indexOf(u8, other, "Tangle with `tools/litmus tangle -o out doc/a.adoc doc/b.md`") != null);
     try t.expect(std.mem.indexOf(u8, other, "`tools/litmus check -o out doc/a.adoc doc/b.md` passes") != null);
 }
 

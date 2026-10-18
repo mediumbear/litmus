@@ -1,0 +1,19 @@
+… :file: f.txt
+----
+top
+  … e
+end
+----
+
+… e :file: f.txt
+----
+one
+new
+two
+… f
+----
+
+… f :file: f.txt
+----
+deep
+----

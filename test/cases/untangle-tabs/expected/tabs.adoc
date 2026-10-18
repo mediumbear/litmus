@@ -1,0 +1,12 @@
+… :file: t.txt
+----
+top
+	… e
+----
+
+… e :file: t.txt
+----
+ONE
+mid
+	TWO
+----

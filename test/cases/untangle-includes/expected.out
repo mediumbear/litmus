@@ -1,0 +1,3 @@
+changed 1 line, removed 0 lines, added 1 line, in 2 documents
+needs prose: main.adoc:1 (file root of all.txt) grew by 1 line
+placed at a boundary: all.txt:3 went after "… one" at main.adoc:4

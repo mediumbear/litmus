@@ -1,0 +1,6 @@
+changed 0 lines, removed 0 lines, added 4 lines, in 1 document
+needs prose: two.adoc:1 (file root of a.txt) grew by 2 lines
+needs prose: two.adoc:14 (file root of b.txt) grew by 2 lines
+placed at a boundary: a.txt:2 went before "… ae" at two.adoc:5
+placed at a boundary: a.txt:4 went after "… ae" at two.adoc:5
+placed at a boundary: b.txt:2 went to the end of the block at two.adoc:14

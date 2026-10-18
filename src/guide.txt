@@ -14,17 +14,22 @@ Finding your way
 
 Changing code
 1. Edit the tangled file and test it as usual.
-2. Make the same change in the document's block: `litmus where` finds it.
-3. Put new code in a new block, labeled with its name and file, inserted by
-   exactly one `… name` line, with prose before it saying what it does and why.
+2. Run the untangle command from AGENTS.md. It carries the change into the
+   document's blocks, and lists the blocks that need prose.
+3. Write the prose for every block it lists: what the new code does and why.
+   If new code deserves a block of its own, put it in one, labeled with its name
+   and file and inserted by exactly one `… name` line.
 4. Run the check command from AGENTS.md. The change is done only when it passes.
 
 Never
 - edit .litmus/map;
-- run `litmus tangle --force` unless the user asks: it overwrites edits in
-  tangled files;
+- run `litmus tangle --force` or `litmus untangle --force` unless the user asks:
+  they skip the protection of edits;
 - start a line of code with `…` (U+2026);
 - leave a tangled file changed without the same change in its document.
 
+If untangle reports a line it cannot place, the line lost the indent of its
+excerpt: fix it in the tangled file and run untangle again. If it says that the
+documents changed too, run `litmus sync`, and if that stops as well, ask the user.
 If tangle refuses because a file changed since it was tangled, the change is not
-in the documents yet: carry it over (step 2), then check.
+in the documents yet: run untangle (step 2), then check.

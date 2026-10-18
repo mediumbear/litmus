@@ -219,7 +219,9 @@ include::../src/guide.txt[]
 <!-- litmus -->
 This project uses Litmus: some source files are tangled from documents that
 explain them. Run `litmus guide` before changing any file listed in
-DIR/.litmus/map. Tangle with `litmus tangle -o DIR DOCUMENT...`, and make sure
+DIR/.litmus/map. After editing a tangled file, carry the change into the
+documents with `litmus untangle -o DIR DOCUMENT...`, and write the prose it asks for.
+Tangle with `litmus tangle -o DIR DOCUMENT...`, and make sure
 `litmus check -o DIR DOCUMENT...` passes before finishing.
 <!-- /litmus -->
 ....

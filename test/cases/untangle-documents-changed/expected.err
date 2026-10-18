@@ -1,0 +1,2 @@
+out.txt: the documents tangle to something else than when it was last tangled (U1)
+the documents changed too; run litmus sync, or untangle with --force

@@ -1,0 +1,7 @@
+:litmus-dir: src
+
+… :file: x.txt
+----
+x
+y
+----

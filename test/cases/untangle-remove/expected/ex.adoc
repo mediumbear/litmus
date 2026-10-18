@@ -1,0 +1,17 @@
+… :file: f.txt
+----
+top
+  … e
+end
+----
+
+… e :file: f.txt
+----
+one
+… f
+----
+
+… f :file: f.txt
+----
+deep
+----
