@@ -96,6 +96,10 @@ Document set:: The documents named on the command line, and the documents they i
 
 *Rule L9.* A file-root label may end with `:executable:`, as in `… :file: scripts/build.sh :executable:`. The file is then written with permission to run it. One such label is enough for the file.
 
+*Rule L10.* A document may name a style file with the attribute entry `:litmus-style: style.md`, on a line of its own, outside blocks, before its first document command. The path is relative to the document, like an include, and may go up with `..`. The style file says who the reader is and how prose and pictures are done, for whoever writes the document's prose, person or agent. An included document uses the style of the document that includes it, unless it names its own. Style never changes code: tangle ignores it.
+
+*Rule L11.* A document may say `:litmus-companion:`, on a line of its own, outside blocks, before its first document command. The document set is then a companion of the code: see <<companion>>.
+
 A listing block closes only at a line equal to the one that opened it. Code that contains a line of four hyphens, such as a Lua comment, goes in a block opened with five or more.
 
 == Tangle
@@ -132,13 +136,15 @@ Each of these is an error, reported as `document:line: message`. If there is any
 
 *Check C7.* A path breaks L1 or L8, or an `include::` breaks L6. A path may also not contain a tab, since the map separates its fields with tabs.
 
-*Check C8.* A `:litmus-dir:` comes after a document command, or appears twice in one document.
+*Check C8.* A `:litmus-dir:`, `:litmus-style:` or `:litmus-companion:` comes after a document command, or appears twice in one document.
 
 *Check C9.* `:executable:` is on an excerpt's label rather than a file root's.
 
 *Check C10.* A document includes itself, directly or through other documents, is in the document set twice, or names a document that does not exist.
 
 *Check C11.* A document command has no `:file:`, has `:file:` twice, has an attribute other than `:file:` and `:executable:`, or has a name that starts with `:`.
+
+*Check C12.* The style file that a document names does not exist.
 
 C2 and C3 together mean that every excerpt is used exactly once. Then every line of every file comes from exactly one line of the document set, and every line of labeled code lands in exactly one place. Tangle can be run backwards, which is what makes untangle exact.
 
@@ -199,6 +205,14 @@ Does whichever of tangle and untangle the state of the files and the documents c
 
 `litmus watch [-o DIR] [--interval MS] DOCUMENT...`::
 Runs sync now, and again whenever a file changes. See <<watch>>.
+
+`litmus adopt [-o DIR] [--companion] [--style FILE] DOCUMENT PATH...`::
+Writes a new document that holds the code of existing files. See <<adopt>>.
+
+`litmus style DOCUMENT...`::
+Prints, for each document of the set, the style file that applies to it (L10), or `none`.
+
+*Rule N1.* Untangle, sync and watch end what they print with a line that starts with `next:` and says what to do next, in words an agent can act on: which prose to write and in which style, what to revert, or that nothing is left to do.
 
 Document paths are recorded in the map as they were given, so Litmus is run from the same directory each time, normally the project's root.
 
@@ -299,9 +313,47 @@ placed at a boundary: hello.zig:5 went after "… greet" at hello.adoc:9
 
 Each run is printed as a block: a heading with the seconds since watch started and the files that changed, and then what sync says. Nothing is printed when a look finds no change. Watch runs until it is stopped.
 
+[[companion]]
+== Companion Documents
+
+A companion document explains code that it does not own: code someone else wrote, or code an agent wrote, that a reader wants to understand. It must never write to that code, and it must follow the code as the code moves on.
+
+*Rule R1.* A document set is a companion if any of its documents says `:litmus-companion:` (L11).
+
+*Rule R2.* A companion's map is kept in `.litmus/map` in the directory of the first document named on the command line, not under `DIR`. Nothing is ever written under `DIR`.
+
+*Rule R3.* Tangle refuses to tangle a companion.
+
+*Rule R4.* Untangle and check work as for any document set. Untangle is how a companion follows the code: a change in the code is carried into the document.
+
+*Rule R5.* If a companion's code was changed in the document, sync and watch do not tangle it. They report it, and say to undo the change in the document, or to run `untangle --force`, which takes the code's version.
+
+[[adopt]]
+== Adopt
+
+`litmus adopt` writes a new document from code that has none, as the start of a literate document. The code is split into excerpts, so that a writer, person or agent, can reorder them and write prose around them. The document holds every line of the code, so it passes `check` at once.
+
+*Rule A1.* Each `PATH` is relative to `DIR`. A folder stands for the files in it, found recursively and taken in sorted order. Entries whose name starts with `.`, the folders `zig-out`, `build`, `DerivedData`, `node_modules` and `Pods`, and files that hold a zero byte, are skipped.
+
+*Rule A2.* Adopt refuses to write a document that exists, and refuses a file that cannot go into a block: one with a line that starts with `…` after spaces and tabs (L4), or with a line that starts with `include::` (L6).
+
+*Rule A3.* Each file becomes a section whose title is its path, with a file root and excerpts. A line `// MARK: - Title` or `// MARK: Title` becomes a subsection with that title, where it falls between excerpts.
+
+*Rule A4.* At the top level, an excerpt starts at a line that begins with neither a space nor a tab, nor `}`, and that follows a blank line. Comment lines directly above a declaration stay with it.
+
+*Rule A5.* A top-level excerpt of more than 40 lines whose first line ends with `{`, and whose last line is `}` or `};`, is split one level deeper. Inside it, an excerpt starts at a line that has the indent of the first non-blank line of the body, follows a blank line, and is not a closing brace. Each such excerpt is inserted by an excerpt command at that indent.
+
+*Rule A6.* An excerpt is named after its first line: the first word that is not a keyword or a modifier, with punctuation after it removed. Keywords and modifiers are words such as `pub`, `fn`, `const`, `var`, `let`, `func`, `struct`, `class`, `actor`, `enum`, `extension`, `protocol`, `init`, `public`, `private`, `fileprivate`, `internal`, `static`, `final`, `override`, `mutating`, `nonisolated`, `export`, `extern`, `inline`, `test`, and attributes such as `@MainActor`. A member is named `Type.member`. A test is named after its string. A name already taken in the file gets a number.
+
+*Rule A7.* Each block opens with a line of hyphens one longer than the longest line of only hyphens in its code, and at least four.
+
+*Rule A8.* The document names its style file if `--style` is given (L10), and says `:litmus-companion:` if `--companion` is given (L11). Adopt then writes the map, under `DIR`, or beside the document for a companion (R2), so that untangle, sync and watch work at once.
+
 == Weave
 
-Later. Asciidoctor with a small extension: a document command becomes an anchor and a note of the file its block lands in. An excerpt command becomes a link to its excerpt, and can be expanded in place.
+Asciidoctor with a small extension, `doc/litmus-weave.rb`. A document command becomes a small label with its file name and an anchor. An excerpt command becomes a link to its excerpt, and the label links back. The table of contents follows the section being read. Diagrams in `<pre class="mermaid">` passthrough blocks are drawn by Mermaid.
+
+*Rule V1.* If the main document names a style file, the weave reads the `key: value` lines in its `## Settings` section. `mermaid-theme` sets the theme of the diagrams.
 
 == Markdown
 
