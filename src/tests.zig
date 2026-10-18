@@ -13,4 +13,5 @@ test {
     _ = @import("diff.zig");
     _ = @import("untangle.zig");
     _ = @import("sync.zig");
+    _ = @import("watch.zig");
 }

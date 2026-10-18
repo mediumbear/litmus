@@ -158,7 +158,81 @@ cases() {
     fi
   done
   echo "cases: $count run"
+  watch_tests
   speed
+}
+
+# Waits until the log has at least $3 lines that contain $2, or fails after ten seconds.
+wait_for() {
+  local log=$1 pattern=$2 want=${3:-1} i
+  for i in $(seq 1 200); do
+    [ "$(grep -c -F -e "$pattern" "$log")" -ge "$want" ] && return 0
+    sleep 0.05
+  done
+  return 1
+}
+
+# Watch is started in a sandbox with a short interval, the files and documents are changed as
+# a writer would change them, and each time the log has to say what happened (W1 to W5).
+watch_tests() {
+  local sandbox=$work/watch log=$work/watch.log pid
+  rm -rf "$sandbox" && mkdir -p "$sandbox"
+  printf '%s\n' '… :file: a.txt' '----' 'one' '… more' '----' '' '… more :file: a.txt' '----' 'two' '----' > "$sandbox/w.adoc"
+  (cd "$sandbox" && "$litmus" watch --interval 50 w.adoc > "$log" 2>&1) &
+  pid=$!
+
+  # W1: sync runs at the start, and tangles.
+  wait_for "$log" "wrote a.txt" 1 || fail watch "no tangle at the start: $(cat "$log")"
+  [ "$(cat "$sandbox/a.txt")" = "$(printf 'one\ntwo')" ] || fail watch "a.txt is wrong at the start"
+
+  # W4, W1: nothing is printed while nothing changes, and the files that watch wrote are not changes.
+  local before
+  before=$(wc -l < "$log")
+  sleep 0.6
+  [ "$(wc -l < "$log")" -eq "$before" ] || fail watch "watch printed while nothing changed: $(cat "$log")"
+
+  # W1, W3: a tangled file is saved, and watch untangles.
+  printf 'one\nTWO\n' > "$sandbox/a.txt"
+  wait_for "$log" "changed: a.txt" 1 || fail watch "no run after a.txt changed: $(cat "$log")"
+  wait_for "$log" "the files changed: untangling" 1 || fail watch "no untangle: $(cat "$log")"
+  grep -q '^TWO$' "$sandbox/w.adoc" || fail watch "the change did not reach the document"
+
+  # A document is saved, and watch tangles.
+  sed 's/^one$/ONE/' "$sandbox/w.adoc" > "$sandbox/w.tmp" && mv "$sandbox/w.tmp" "$sandbox/w.adoc"
+  wait_for "$log" "changed: w.adoc" 1 || fail watch "no run after w.adoc changed: $(cat "$log")"
+  wait_for "$log" "the documents changed: tangling" 2 || fail watch "no tangle: $(cat "$log")"
+  grep -q '^ONE$' "$sandbox/a.txt" || fail watch "the change did not reach the file"
+
+  # W5: both sides changed in one quiet period. Watch says so, does nothing, and waits.
+  local runs
+  runs=$(grep -c '^\[' "$log")
+  printf 'ONE\nTWO\nfile side\n' > "$sandbox/a.txt"
+  sed 's/^ONE$/doc side/' "$sandbox/w.adoc" > "$sandbox/w.tmp" && mv "$sandbox/w.tmp" "$sandbox/w.adoc"
+  wait_for "$log" "both sides changed" 1 || fail watch "no stop when both changed: $(cat "$log")"
+  sleep 0.5
+  [ "$(grep -c '^\[' "$log")" -eq $((runs + 1)) ] || fail watch "watch ran again by itself after it stopped"
+  grep -q '^file side$' "$sandbox/a.txt" || fail watch "the file was touched after both sides changed"
+  # The writer puts the file back, so only the document differs, and watch tangles.
+  printf 'ONE\nTWO\n' > "$sandbox/a.txt"
+  wait_for "$log" "the documents changed: tangling" 3 || fail watch "no recovery after the file was put back: $(cat "$log")"
+
+  # W5: a document with an error is reported, and a fix brings watch on.
+  cp "$sandbox/w.adoc" "$sandbox/good.adoc"
+  printf '… :file: a.txt\n\n' >> "$sandbox/w.adoc"
+  wait_for "$log" "C5" 1 || fail watch "no report of the error: $(cat "$log")"
+  cp "$sandbox/good.adoc" "$sandbox/w.adoc"
+  wait_for "$log" "in sync" 1 || fail watch "no run after the document was fixed: $(cat "$log")"
+
+  # W2: an include added while watching is watched from then on.
+  printf '… extra :file: b.txt\n----\nextra text\n----\n' > "$sandbox/more.adoc"
+  printf '\n… :file: b.txt\n----\n… extra\n----\n\ninclude::more.adoc[]\n' >> "$sandbox/w.adoc"
+  wait_for "$log" "wrote b.txt" 1 || fail watch "the new include was not tangled: $(cat "$log")"
+  printf '… extra :file: b.txt\n----\nchanged extra\n----\n' > "$sandbox/more.adoc"
+  wait_for "$log" "changed: more.adoc" 1 || fail watch "the included document is not watched: $(cat "$log")"
+  [ "$(cat "$sandbox/b.txt")" = "changed extra" ] || fail watch "b.txt is wrong after more.adoc changed"
+
+  kill "$pid" 2> /dev/null
+  wait "$pid" 2> /dev/null
 }
 
 # Tangling 100,000 lines of code is timed, and the time is reported.

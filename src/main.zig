@@ -11,6 +11,7 @@ const compare = @import("compare.zig");
 const init_command = @import("init.zig");
 const untangle = @import("untangle.zig");
 const sync = @import("sync.zig");
+const watch = @import("watch.zig");
 
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
@@ -23,6 +24,7 @@ const usage =
     \\       litmus init [-o DIR] DOCUMENT...
     \\       litmus untangle [-o DIR] [-f FILE]... [--force] DOCUMENT...
     \\       litmus sync [-o DIR] DOCUMENT...
+    \\       litmus watch [-o DIR] [--interval MS] DOCUMENT...
     \\
 ;
 
@@ -40,11 +42,13 @@ const Options = struct {
     force: bool = false,
     /// The files named with `-f` (U8).
     files: []const []const u8 = &.{},
+    /// How often watch looks at the files, in milliseconds (W3).
+    interval_ms: u64 = 200,
     positional: []const []const u8 = &.{},
 };
 
 /// Which options a command takes besides `-o DIR`.
-const Allowed = struct { force: bool = false, files: bool = false };
+const Allowed = struct { force: bool = false, files: bool = false, interval: bool = false };
 
 /// Reads `-o DIR`, and `--force` and `-f FILE` when allowed. Prints the problem and returns
 /// null on a usage error.
@@ -64,6 +68,14 @@ fn parseOptions(ctx: Context, args: []const []const u8, allowed: Allowed) !?Opti
             options.out_dir = args[i];
         } else if (allowed.force and std.mem.eql(u8, arg, "--force")) {
             options.force = true;
+        } else if (allowed.interval and std.mem.eql(u8, arg, "--interval")) {
+            i += 1;
+            const milliseconds = if (i < args.len) std.fmt.parseInt(u64, args[i], 10) catch 0 else 0;
+            if (milliseconds == 0) {
+                try ctx.err.writeAll("litmus: --interval needs a number of milliseconds\n");
+                return null;
+            }
+            options.interval_ms = milliseconds;
         } else if (allowed.files and std.mem.eql(u8, arg, "-f")) {
             i += 1;
             if (i == args.len) {
@@ -111,9 +123,16 @@ fn printDiagnostics(ctx: Context, diags: *types.Diagnostics, docs: []const types
 
 /// Loads, checks and tangles the document set. On errors it prints them and returns null.
 fn build(ctx: Context, documents: []const []const u8) !?Built {
+    return buildInto(ctx, documents, null);
+}
+
+/// Like `build`, and gives the documents that were found even when there are errors, which
+/// watch needs to know what to watch.
+fn buildInto(ctx: Context, documents: []const []const u8, found: ?*[]const types.Document) !?Built {
     var diags = types.Diagnostics.init(ctx.arena);
     var fs: DiskFs = .{ .io = ctx.io };
     const set = try docset.load(ctx.arena, &fs, documents, &diags);
+    if (found) |out| out.* = set.docs;
     // Mistakes in the structure make the checks of the whole set misleading.
     if (diags.list.items.len == 0) {
         const resolved = try resolve.resolve(ctx.arena, set.docs, set.blocks, &diags);
@@ -341,14 +360,23 @@ fn untangleCommand(ctx: Context, args: []const []const u8) !u8 {
     return 0;
 }
 
-fn syncCommand(ctx: Context, args: []const []const u8) !u8 {
-    const options = (try parseOptions(ctx, args, .{})) orelse return 2;
-    if (!try documentsOk(ctx, options.positional)) return 2;
-    const built = (try build(ctx, options.positional)) orelse return 1;
+const SyncResult = struct {
+    code: u8,
+    /// The files that a watcher should look at (W2): the documents of the set, and the tangled files.
+    watched: []const []const u8 = &.{},
+};
+
+/// One run of sync (U7). `args` are the arguments of the command, which tangle and untangle read again.
+fn syncOnce(ctx: Context, options: Options, args: []const []const u8) !SyncResult {
+    var found: []const types.Document = &.{};
+    const built = (try buildInto(ctx, options.positional, &found)) orelse {
+        return .{ .code = 1, .watched = try watchedPaths(ctx, options, found, &.{}) };
+    };
+    const watched = try watchedPaths(ctx, options, built.docs, built.files);
 
     var dir = Io.Dir.cwd().openDir(ctx.io, options.out_dir, .{}) catch |e| {
         try ctx.err.print("{s}: {s}\n", .{ options.out_dir, @errorName(e) });
-        return 1;
+        return .{ .code = 1, .watched = watched };
     };
     defer dir.close(ctx.io);
     const map_text = try output.readOrNull(ctx.io, ctx.arena, dir, output.map_path);
@@ -364,15 +392,15 @@ fn syncCommand(ctx: Context, args: []const []const u8) !u8 {
     switch (sync.direction(states)) {
         .in_sync => {
             try ctx.out.writeAll("in sync\n");
-            return 0;
+            return .{ .code = 0, .watched = watched };
         },
         .untangle => {
             try ctx.out.writeAll("the files changed: untangling\n");
-            return untangleCommand(ctx, args);
+            return .{ .code = try untangleCommand(ctx, args), .watched = watched };
         },
         .tangle => {
             try ctx.out.writeAll("the documents changed: tangling\n");
-            return tangleCommand(ctx, args);
+            return .{ .code = try tangleCommand(ctx, args), .watched = watched };
         },
         .stop => {
             try ctx.err.writeAll("both sides changed, or it is not known which did; nothing was done\n");
@@ -388,9 +416,113 @@ fn syncCommand(ctx: Context, args: []const []const u8) !u8 {
             }
             const differences = try compare.compare(ctx.io, ctx.arena, dir, built.docs, built.files);
             for (differences) |difference| try difference.print(ctx.err);
-            return 1;
+            return .{ .code = 1, .watched = watched };
         },
     }
+}
+
+fn syncCommand(ctx: Context, args: []const []const u8) !u8 {
+    const options = (try parseOptions(ctx, args, .{})) orelse return 2;
+    if (!try documentsOk(ctx, options.positional)) return 2;
+    return (try syncOnce(ctx, options, args)).code;
+}
+
+/// What watch remembers between looks: the files it watches and what it saw of them. It
+/// owns an arena, which is replaced as a whole.
+const Seen = struct {
+    arena: std.heap.ArenaAllocator,
+    paths: []const []const u8,
+    snapshot: watch.Snapshot,
+
+    fn take(io: Io, paths: []const []const u8) !Seen {
+        var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        errdefer arena.deinit();
+        const copies = try arena.allocator().alloc([]const u8, paths.len);
+        for (paths, copies) |path, *copy| copy.* = try arena.allocator().dupe(u8, path);
+        return .{ .arena = arena, .paths = copies, .snapshot = try watch.take(io, arena.allocator(), copies) };
+    }
+
+    fn deinit(self: *Seen) void {
+        self.arena.deinit();
+    }
+};
+
+fn seconds(io: Io, since: Io.Timestamp) f64 {
+    const ns = since.durationTo(Io.Timestamp.now(io, .awake)).nanoseconds;
+    return @as(f64, @floatFromInt(ns)) / 1e9;
+}
+
+fn watchCommand(ctx: Context, args: []const []const u8) !u8 {
+    const options = (try parseOptions(ctx, args, .{ .interval = true })) orelse return 2;
+    if (!try documentsOk(ctx, options.positional)) return 2;
+    // Tangle and untangle read the arguments again, and do not know `--interval`.
+    var inner: std.ArrayList([]const u8) = .empty;
+    var skip = false;
+    for (args) |arg| {
+        if (skip) {
+            skip = false;
+        } else if (std.mem.eql(u8, arg, "--interval")) {
+            skip = true;
+        } else try inner.append(ctx.arena, arg);
+    }
+    const started = Io.Timestamp.now(ctx.io, .awake);
+    const interval = Io.Duration.fromMilliseconds(@intCast(options.interval_ms));
+    var debounce: watch.Debounce = .{ .quiet = @intCast(options.interval_ms * std.time.ns_per_ms) };
+
+    var reason: []const u8 = "start";
+    var seen: Seen = undefined;
+    var first = true;
+    while (true) {
+        // W1, W4: run sync, and look at the files again when it is over.
+        {
+            var run_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+            defer run_arena.deinit();
+            var run_ctx = ctx;
+            run_ctx.arena = run_arena.allocator();
+            try ctx.out.print("[{d:.1}s] {s}\n", .{ seconds(ctx.io, started), reason });
+            const result = syncOnce(run_ctx, options, inner.items) catch |e| blk: {
+                try ctx.err.print("litmus: {s}\n", .{@errorName(e)});
+                break :blk SyncResult{ .code = 1 };
+            };
+            const next = try Seen.take(ctx.io, result.watched);
+            if (!first) seen.deinit();
+            seen = next;
+            first = false;
+            try ctx.out.flush();
+            try ctx.err.flush();
+        }
+
+        // W1, W3: look every interval, until something changed and then stayed quiet.
+        var last: ?Seen = null;
+        defer if (last) |*l| l.deinit();
+        while (true) {
+            try ctx.io.sleep(interval, .awake);
+            const now = try Seen.take(ctx.io, seen.paths);
+            var scratch = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+            defer scratch.deinit();
+            const before = if (last) |l| l.snapshot else seen.snapshot;
+            const moved = (try watch.changed(scratch.allocator(), before, now.snapshot)).len > 0;
+            if (last) |*l| l.deinit();
+            last = now;
+            const t_now: i64 = @intCast(Io.Timestamp.now(ctx.io, .awake).nanoseconds);
+            if (!debounce.observe(moved, t_now)) continue;
+            // What changed since the run, named for the heading (W3).
+            const names = try watch.changed(scratch.allocator(), seen.snapshot, last.?.snapshot);
+            reason = try std.fmt.allocPrint(ctx.arena, "changed: {s}", .{try std.mem.join(scratch.allocator(), ", ", names)});
+            break;
+        }
+    }
+}
+
+/// W2: the documents of the set and the tangled files, as paths from the current directory.
+fn watchedPaths(ctx: Context, options: Options, docs: []const types.Document, files: []const tangle.Tangled) ![]const []const u8 {
+    var paths: std.ArrayList([]const u8) = .empty;
+    for (docs) |doc| try paths.append(ctx.arena, doc.path);
+    for (files) |file| {
+        const path = if (std.mem.eql(u8, options.out_dir, ".")) file.path else try std.fs.path.join(ctx.arena, &.{ options.out_dir, file.path });
+        try paths.append(ctx.arena, path);
+    }
+    return paths.items;
 }
 
 fn initCommand(ctx: Context, exe: []const u8, args: []const []const u8) !u8 {
@@ -427,6 +559,7 @@ pub fn main(init: std.process.Init) !u8 {
         if (std.mem.eql(u8, command, "init")) break :run initCommand(ctx, args[0], rest);
         if (std.mem.eql(u8, command, "untangle")) break :run untangleCommand(ctx, rest);
         if (std.mem.eql(u8, command, "sync")) break :run syncCommand(ctx, rest);
+        if (std.mem.eql(u8, command, "watch")) break :run watchCommand(ctx, rest);
         if (std.mem.eql(u8, command, "guide")) {
             try out.writeAll(guide_text);
             break :run 0;

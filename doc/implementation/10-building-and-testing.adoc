@@ -174,6 +174,7 @@ test {
     _ = @import("diff.zig");
     _ = @import("untangle.zig");
     _ = @import("sync.zig");
+    _ = @import("watch.zig");
 }
 ----
 
@@ -197,6 +198,12 @@ test {
 … tangle_case
 
 … cases
+
+… wait_for
+
+… watch_tests
+
+… speed
 
 … self
 
@@ -434,7 +441,7 @@ while IFS=$'\t' read -r first second third fourth fifth sixth; do
 done < "$out/.litmus/map"
 ----
 
-`cases` runs every directory of `test/cases`, and picks the function by what the directory holds. After the cases it times the tangling of a generated document of 100,000 lines of code, a thousand excerpts of a hundred lines each, and then the untangling of one changed line of the result. The times are printed and not judged, since they depend on the machine and on whether the program is a release build.
+`cases` runs every directory of `test/cases`, and picks the function by what the directory holds. Then it runs the watch tests. After the cases it times the tangling of a generated document of 100,000 lines of code, a thousand excerpts of a hundred lines each, and then the untangling of one changed line of the result. The times are printed and not judged, since they depend on the machine and on whether the program is a release build.
 
 … cases :file: test/run.sh
 [source,bash]
@@ -454,9 +461,159 @@ cases() {
     fi
   done
   echo "cases: $count run"
+  watch_tests
   speed
 }
+----
 
+=== The watch tests
+
+Watch cannot be tested by comparing trees, since it runs until it is stopped. These tests start it, change files as a writer would, and wait for the log to say what happened. `wait_for` polls the log for a line, up to ten seconds, and fails if it is not there. A slow machine is slow, not wrong.
+
+… wait_for :file: test/run.sh
+[source,bash]
+----
+# Waits until the log has at least $3 lines that contain $2, or fails after ten seconds.
+wait_for() {
+  local log=$1 pattern=$2 want=${3:-1} i
+  for i in $(seq 1 200); do
+    [ "$(grep -c -F -e "$pattern" "$log")" -ge "$want" ] && return 0
+    sleep 0.05
+  done
+  return 1
+}
+----
+
+The tests run in order, each one starting from where the one before ended. The log is checked for words that are in sync's messages: `the files changed: untangling` and `the documents changed: tangling`.
+
+… watch_tests :file: test/run.sh
+[source,bash]
+----
+# Watch is started in a sandbox with a short interval, the files and documents are changed as
+# a writer would change them, and each time the log has to say what happened (W1 to W5).
+watch_tests() {
+  local sandbox=$work/watch log=$work/watch.log pid
+  rm -rf "$sandbox" && mkdir -p "$sandbox"
+  printf '%s\n' '… :file: a.txt' '----' 'one' '… more' '----' '' '… more :file: a.txt' '----' 'two' '----' > "$sandbox/w.adoc"
+  (cd "$sandbox" && "$litmus" watch --interval 50 w.adoc > "$log" 2>&1) &
+  pid=$!
+
+  … watch test, the start
+
+  … watch test, quiet
+
+  … watch test, a tangled file is saved
+
+  … watch test, a document is saved
+
+  … watch test, both sides changed
+
+  … watch test, an error and a fix
+
+  … watch test, an include
+
+  kill "$pid" 2> /dev/null
+  wait "$pid" 2> /dev/null
+}
+----
+
+The sandbox has a document with one file and one excerpt. Watch is started in the background with an interval of 50 milliseconds, and its output goes to a log. At the start it has to tangle (W1).
+
+… watch test, the start :file: test/run.sh
+[source,bash]
+----
+# W1: sync runs at the start, and tangles.
+wait_for "$log" "wrote a.txt" 1 || fail watch "no tangle at the start: $(cat "$log")"
+[ "$(cat "$sandbox/a.txt")" = "$(printf 'one\ntwo')" ] || fail watch "a.txt is wrong at the start"
+----
+
+Then it has to be quiet. After a short wait the log must not have grown: nothing changed, and what watch itself wrote at the start is not a change (W4).
+
+… watch test, quiet :file: test/run.sh
+[source,bash]
+----
+# W4, W1: nothing is printed while nothing changes, and the files that watch wrote are not changes.
+local before
+before=$(wc -l < "$log")
+sleep 0.6
+[ "$(wc -l < "$log")" -eq "$before" ] || fail watch "watch printed while nothing changed: $(cat "$log")"
+----
+
+Next the tangled file is saved with a change, as an editor would. Watch has to name the file, and untangle: the change must show up in the document (W1, W3).
+
+… watch test, a tangled file is saved :file: test/run.sh
+[source,bash]
+----
+# W1, W3: a tangled file is saved, and watch untangles.
+printf 'one\nTWO\n' > "$sandbox/a.txt"
+wait_for "$log" "changed: a.txt" 1 || fail watch "no run after a.txt changed: $(cat "$log")"
+wait_for "$log" "the files changed: untangling" 1 || fail watch "no untangle: $(cat "$log")"
+grep -q '^TWO$' "$sandbox/w.adoc" || fail watch "the change did not reach the document"
+----
+
+Then the document is saved with a change in its code, and watch has to tangle, so that the file follows.
+
+… watch test, a document is saved :file: test/run.sh
+[source,bash]
+----
+# A document is saved, and watch tangles.
+sed 's/^one$/ONE/' "$sandbox/w.adoc" > "$sandbox/w.tmp" && mv "$sandbox/w.tmp" "$sandbox/w.adoc"
+wait_for "$log" "changed: w.adoc" 1 || fail watch "no run after w.adoc changed: $(cat "$log")"
+wait_for "$log" "the documents changed: tangling" 2 || fail watch "no tangle: $(cat "$log")"
+grep -q '^ONE$' "$sandbox/a.txt" || fail watch "the change did not reach the file"
+----
+
+When a file and a document change in one quiet period, sync cannot say which way to go. Watch must say so, do nothing, and not run again by itself, since nothing changed since (W5). When the writer puts the file back, only the document differs, and watch tangles.
+
+… watch test, both sides changed :file: test/run.sh
+[source,bash]
+----
+# W5: both sides changed in one quiet period. Watch says so, does nothing, and waits.
+local runs
+runs=$(grep -c '^\[' "$log")
+printf 'ONE\nTWO\nfile side\n' > "$sandbox/a.txt"
+sed 's/^ONE$/doc side/' "$sandbox/w.adoc" > "$sandbox/w.tmp" && mv "$sandbox/w.tmp" "$sandbox/w.adoc"
+wait_for "$log" "both sides changed" 1 || fail watch "no stop when both changed: $(cat "$log")"
+sleep 0.5
+[ "$(grep -c '^\[' "$log")" -eq $((runs + 1)) ] || fail watch "watch ran again by itself after it stopped"
+grep -q '^file side$' "$sandbox/a.txt" || fail watch "the file was touched after both sides changed"
+# The writer puts the file back, so only the document differs, and watch tangles.
+printf 'ONE\nTWO\n' > "$sandbox/a.txt"
+wait_for "$log" "the documents changed: tangling" 3 || fail watch "no recovery after the file was put back: $(cat "$log")"
+----
+
+A document with a label and no block is C5. Watch reports it. A fixed document brings the next run, which finds everything in sync (W5).
+
+… watch test, an error and a fix :file: test/run.sh
+[source,bash]
+----
+# W5: a document with an error is reported, and a fix brings watch on.
+cp "$sandbox/w.adoc" "$sandbox/good.adoc"
+printf '… :file: a.txt\n\n' >> "$sandbox/w.adoc"
+wait_for "$log" "C5" 1 || fail watch "no report of the error: $(cat "$log")"
+cp "$sandbox/good.adoc" "$sandbox/w.adoc"
+wait_for "$log" "in sync" 1 || fail watch "no run after the document was fixed: $(cat "$log")"
+----
+
+Last, an include is added to the document while watch runs. The included document defines a new file, which has to be tangled, and then a change of only the included document has to run watch again, which shows that the set of watched files is worked out again after each run (W2).
+
+… watch test, an include :file: test/run.sh
+[source,bash]
+----
+# W2: an include added while watching is watched from then on.
+printf '… extra :file: b.txt\n----\nextra text\n----\n' > "$sandbox/more.adoc"
+printf '\n… :file: b.txt\n----\n… extra\n----\n\ninclude::more.adoc[]\n' >> "$sandbox/w.adoc"
+wait_for "$log" "wrote b.txt" 1 || fail watch "the new include was not tangled: $(cat "$log")"
+printf '… extra :file: b.txt\n----\nchanged extra\n----\n' > "$sandbox/more.adoc"
+wait_for "$log" "changed: more.adoc" 1 || fail watch "the included document is not watched: $(cat "$log")"
+[ "$(cat "$sandbox/b.txt")" = "changed extra" ] || fail watch "b.txt is wrong after more.adoc changed"
+----
+
+The speed test comes last, as before.
+
+… speed :file: test/run.sh
+[source,bash]
+----
 # Tangling 100,000 lines of code is timed, and the time is reported.
 speed() {
   local big=$work/big

@@ -2,7 +2,7 @@
 
 :litmus-dir: src
 
-Everything so far was a stage. This chapter puts the stages together into the five commands of the spec:
+Everything so far was a stage. This chapter puts the stages together into the commands of the spec:
 
 `litmus tangle [-o DIR] [--force] DOCUMENT...`::
 Loads the document set, resolves and checks it, tangles, and writes the files and the map.
@@ -18,6 +18,15 @@ Prints the guide for agents.
 
 `litmus init [-o DIR] DOCUMENT...`::
 Prepares a project so that agents find the guide.
+
+`litmus untangle [-o DIR] [-f FILE]... [--force] DOCUMENT...`::
+Carries changes in the tangled files back into the documents.
+
+`litmus sync [-o DIR] DOCUMENT...`::
+Does whichever of tangle and untangle is needed.
+
+`litmus watch [-o DIR] [--interval MS] DOCUMENT...`::
+Runs sync now, and again whenever a file changes.
 
 `main.zig` reads the command line and runs the right command. `compare.zig` is the comparison that `check` makes, and `init.zig` is init. The text of the guide is a file of its own, which the program carries inside it.
 
@@ -52,14 +61,22 @@ Prepares a project so that agents find the guide.
 
 … untangleCommand
 
+… syncOnce
+
 … syncCommand
+
+… Seen
+
+… watchCommand
+
+… watchedPaths
 
 … initCommand
 
 … main
 ----
 
-The file imports every stage, since it is where they meet. Untangle and sync are the last two.
+The file imports every stage, since it is where they meet. Untangle, sync and watch come last, and `watch.zig` is the one new file.
 
 … header :file: main.zig
 [source,zig]
@@ -77,12 +94,13 @@ const compare = @import("compare.zig");
 const init_command = @import("init.zig");
 const untangle = @import("untangle.zig");
 const sync = @import("sync.zig");
+const watch = @import("watch.zig");
 
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
 ----
 
-The usage text is printed for any wrong command line, and lists the seven commands, and the guide is embedded in the program with `@embedFile`, so that `litmus guide` always matches the version of Litmus in use.
+The usage text is printed for any wrong command line, and lists the eight commands, and the guide is embedded in the program with `@embedFile`, so that `litmus guide` always matches the version of Litmus in use.
 
 … usage :file: main.zig
 [source,zig]
@@ -95,6 +113,7 @@ const usage =
     \\       litmus init [-o DIR] DOCUMENT...
     \\       litmus untangle [-o DIR] [-f FILE]... [--force] DOCUMENT...
     \\       litmus sync [-o DIR] DOCUMENT...
+    \\       litmus watch [-o DIR] [--interval MS] DOCUMENT...
     \\
 ;
 
@@ -114,7 +133,7 @@ const Context = struct {
 };
 ----
 
-The options are `-o DIR`, `--force` for tangle and untangle, and `-f FILE` for untangle (U8). Each command says which of them it takes, in an `Allowed` value. Anything else that starts with a hyphen is an error, and the rest are the positional arguments: documents, or the `FILE:LINE` of `where`. `parseOptions` prints the problem itself and returns null, and the caller exits with 2.
+The options are `-o DIR`, `--force` for tangle and untangle, and `-f FILE` for untangle (U8), and `--interval MS` for watch (W3). Each command says which of them it takes, in an `Allowed` value. Anything else that starts with a hyphen is an error, and the rest are the positional arguments: documents, or the `FILE:LINE` of `where`. `parseOptions` prints the problem itself and returns null, and the caller exits with 2.
 
 … Options :file: main.zig
 [source,zig]
@@ -124,11 +143,13 @@ const Options = struct {
     force: bool = false,
     /// The files named with `-f` (U8).
     files: []const []const u8 = &.{},
+    /// How often watch looks at the files, in milliseconds (W3).
+    interval_ms: u64 = 200,
     positional: []const []const u8 = &.{},
 };
 
 /// Which options a command takes besides `-o DIR`.
-const Allowed = struct { force: bool = false, files: bool = false };
+const Allowed = struct { force: bool = false, files: bool = false, interval: bool = false };
 
 /// Reads `-o DIR`, and `--force` and `-f FILE` when allowed. Prints the problem and returns
 /// null on a usage error.
@@ -148,6 +169,14 @@ fn parseOptions(ctx: Context, args: []const []const u8, allowed: Allowed) !?Opti
             options.out_dir = args[i];
         } else if (allowed.force and std.mem.eql(u8, arg, "--force")) {
             options.force = true;
+        } else if (allowed.interval and std.mem.eql(u8, arg, "--interval")) {
+            i += 1;
+            const milliseconds = if (i < args.len) std.fmt.parseInt(u64, args[i], 10) catch 0 else 0;
+            if (milliseconds == 0) {
+                try ctx.err.writeAll("litmus: --interval needs a number of milliseconds\n");
+                return null;
+            }
+            options.interval_ms = milliseconds;
         } else if (allowed.files and std.mem.eql(u8, arg, "-f")) {
             i += 1;
             if (i == args.len) {
@@ -183,7 +212,7 @@ const DiskFs = struct {
 };
 ----
 
-`build` is shared by tangle and check: load, resolve, tangle. If any stage reports a problem, the diagnostics are sorted, printed, and `null` is returned. When the loading stage has found problems, the checks of the whole set are not run, because they would be answers about a set that was read wrongly: a label that failed to parse would make its excerpt unused, and so on.
+`build` is shared by tangle, check and the commands built on them: load, resolve, tangle. `buildInto` also gives back the documents that were found, even when there are errors, which watch needs in order to know what to watch (W2). If any stage reports a problem, the diagnostics are sorted, printed, and `null` is returned. When the loading stage has found problems, the checks of the whole set are not run, because they would be answers about a set that was read wrongly: a label that failed to parse would make its excerpt unused, and so on.
 
 … Built :file: main.zig
 [source,zig]
@@ -207,9 +236,16 @@ fn printDiagnostics(ctx: Context, diags: *types.Diagnostics, docs: []const types
 
 /// Loads, checks and tangles the document set. On errors it prints them and returns null.
 fn build(ctx: Context, documents: []const []const u8) !?Built {
+    return buildInto(ctx, documents, null);
+}
+
+/// Like `build`, and gives the documents that were found even when there are errors, which
+/// watch needs to know what to watch.
+fn buildInto(ctx: Context, documents: []const []const u8, found: ?*[]const types.Document) !?Built {
     var diags = types.Diagnostics.init(ctx.arena);
     var fs: DiskFs = .{ .io = ctx.io };
     const set = try docset.load(ctx.arena, &fs, documents, &diags);
+    if (found) |out| out.* = set.docs;
     // Mistakes in the structure make the checks of the whole set misleading.
     if (diags.list.items.len == 0) {
         const resolved = try resolve.resolve(ctx.arena, set.docs, set.blocks, &diags);
@@ -560,19 +596,28 @@ for (plan.placements.items) |p| {
 }
 ----
 
-`sync` decides which way to go, as the spec's U7 says, and then runs `untangle` or `tangle` itself, with the same arguments. The decision is made by `sync.zig`, which compares hashes. This function gathers them.
+`syncOnce` is one run of sync. It decides which way to go, as the spec's U7 says, and then runs `untangle` or `tangle` itself, with the same arguments. The decision is made by `sync.zig`, which compares hashes. This function gathers them. It gives back an exit code and the list of files that a watcher has to look at: the documents of the set, and the tangled files (W2).
 
-… syncCommand :file: main.zig
+… syncOnce :file: main.zig
 [source,zig]
 ----
-fn syncCommand(ctx: Context, args: []const []const u8) !u8 {
-    const options = (try parseOptions(ctx, args, .{})) orelse return 2;
-    if (!try documentsOk(ctx, options.positional)) return 2;
-    const built = (try build(ctx, options.positional)) orelse return 1;
+const SyncResult = struct {
+    code: u8,
+    /// The files that a watcher should look at (W2): the documents of the set, and the tangled files.
+    watched: []const []const u8 = &.{},
+};
+
+/// One run of sync (U7). `args` are the arguments of the command, which tangle and untangle read again.
+fn syncOnce(ctx: Context, options: Options, args: []const []const u8) !SyncResult {
+    var found: []const types.Document = &.{};
+    const built = (try buildInto(ctx, options.positional, &found)) orelse {
+        return .{ .code = 1, .watched = try watchedPaths(ctx, options, found, &.{}) };
+    };
+    const watched = try watchedPaths(ctx, options, built.docs, built.files);
 
     var dir = Io.Dir.cwd().openDir(ctx.io, options.out_dir, .{}) catch |e| {
         try ctx.err.print("{s}: {s}\n", .{ options.out_dir, @errorName(e) });
-        return 1;
+        return .{ .code = 1, .watched = watched };
     };
     defer dir.close(ctx.io);
     const map_text = try output.readOrNull(ctx.io, ctx.arena, dir, output.map_path);
@@ -582,15 +627,15 @@ fn syncCommand(ctx: Context, args: []const []const u8) !u8 {
     switch (sync.direction(states)) {
         .in_sync => {
             try ctx.out.writeAll("in sync\n");
-            return 0;
+            return .{ .code = 0, .watched = watched };
         },
         .untangle => {
             try ctx.out.writeAll("the files changed: untangling\n");
-            return untangleCommand(ctx, args);
+            return .{ .code = try untangleCommand(ctx, args), .watched = watched };
         },
         .tangle => {
             try ctx.out.writeAll("the documents changed: tangling\n");
-            return tangleCommand(ctx, args);
+            return .{ .code = try tangleCommand(ctx, args), .watched = watched };
         },
         … sync, both sides changed
     }
@@ -630,8 +675,191 @@ When both sides changed, or the direction is not known, nothing is done. Each fi
     }
     const differences = try compare.compare(ctx.io, ctx.arena, dir, built.docs, built.files);
     for (differences) |difference| try difference.print(ctx.err);
-    return 1;
+    return .{ .code = 1, .watched = watched };
 },
+----
+
+`syncCommand` is then short: it reads the options and makes one run. The reason for the split is the next command.
+
+… syncCommand :file: main.zig
+[source,zig]
+----
+fn syncCommand(ctx: Context, args: []const []const u8) !u8 {
+    const options = (try parseOptions(ctx, args, .{})) orelse return 2;
+    if (!try documentsOk(ctx, options.positional)) return 2;
+    return (try syncOnce(ctx, options, args)).code;
+}
+----
+
+=== Watch
+
+`watch` keeps the documents and the files in step while the writer works (W1 to W5). It does not decide anything about the files itself. It decides _when_, and then asks sync.
+
+++++
+<pre class="mermaid">
+flowchart TD
+  start([litmus watch]) --> run[Run sync once]
+  run --> look[Look at every watched file again<br/>so that what sync wrote is not a change]
+  look --> sleep[Sleep one interval]
+  sleep --> poll[Look at every watched file]
+  poll --> moved{Did anything change<br/>since the last look?}
+  moved -- no --> quiet{Was there a change before,<br/>and is it quiet for one interval now?}
+  moved -- yes --> restart[Start waiting again]
+  restart --> sleep
+  quiet -- no --> sleep
+  quiet -- yes --> run
+</pre>
+++++
+
+Two things in the picture are rules of the spec. After a run, the files are looked at again before waiting (W4), so Litmus's own writes are never taken for the writer's. And a run that stops, because both sides changed or a document has an error, is not repeated: the loop goes back to sleep, and only a new change wakes it (W5).
+
+The waiting is the part that is easy to get wrong, so here it is run on a small example. A writer saves three times in a row, and once more later. Each dot is a look at the files. Step through it.
+
+++++
+<div class="lm-debounce" data-changes="2 3 4 9"></div>
+<script src="visuals/debounce.js"></script>
+++++
+
+The functions that look at files and compare the looks are in `watch.zig`, which is small enough to show whole.
+
+What watch remembers between looks is a `Seen`: the paths it watches, and what it saw of them. A path list and a snapshot are made together in one arena of their own, because both are replaced after every run, and a program that runs for hours must not keep every run's memory. The documents of the set may change from one run to the next (W2), so the paths are copied out of the run's arena before it is freed. `seconds` is the time since the start, for the heading of each run.
+
+… Seen :file: main.zig
+[source,zig]
+----
+/// What watch remembers between looks: the files it watches and what it saw of them. It
+/// owns an arena, which is replaced as a whole.
+const Seen = struct {
+    arena: std.heap.ArenaAllocator,
+    paths: []const []const u8,
+    snapshot: watch.Snapshot,
+
+    fn take(io: Io, paths: []const []const u8) !Seen {
+        var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        errdefer arena.deinit();
+        const copies = try arena.allocator().alloc([]const u8, paths.len);
+        for (paths, copies) |path, *copy| copy.* = try arena.allocator().dupe(u8, path);
+        return .{ .arena = arena, .paths = copies, .snapshot = try watch.take(io, arena.allocator(), copies) };
+    }
+
+    fn deinit(self: *Seen) void {
+        self.arena.deinit();
+    }
+};
+
+fn seconds(io: Io, since: Io.Timestamp) f64 {
+    const ns = since.durationTo(Io.Timestamp.now(io, .awake)).nanoseconds;
+    return @as(f64, @floatFromInt(ns)) / 1e9;
+}
+----
+
+The command reads the options like the others, and makes the debounce with the interval as the quiet time.
+
+… watchCommand :file: main.zig
+[source,zig]
+----
+fn watchCommand(ctx: Context, args: []const []const u8) !u8 {
+    const options = (try parseOptions(ctx, args, .{ .interval = true })) orelse return 2;
+    if (!try documentsOk(ctx, options.positional)) return 2;
+    … watch, the arguments for the other commands
+    const started = Io.Timestamp.now(ctx.io, .awake);
+    const interval = Io.Duration.fromMilliseconds(@intCast(options.interval_ms));
+    var debounce: watch.Debounce = .{ .quiet = @intCast(options.interval_ms * std.time.ns_per_ms) };
+
+    var reason: []const u8 = "start";
+    var seen: Seen = undefined;
+    var first = true;
+    while (true) {
+        … watch, run sync
+
+        … watch, wait for a change
+    }
+}
+----
+
+Untangle and tangle read the command's arguments again, since they are commands of their own, and they do not know `--interval`. So the arguments are copied without it.
+
+… watch, the arguments for the other commands :file: main.zig
+[source,zig]
+----
+// Tangle and untangle read the arguments again, and do not know `--interval`.
+var inner: std.ArrayList([]const u8) = .empty;
+var skip = false;
+for (args) |arg| {
+    if (skip) {
+        skip = false;
+    } else if (std.mem.eql(u8, arg, "--interval")) {
+        skip = true;
+    } else try inner.append(ctx.arena, arg);
+}
+----
+
+A run: the arguments are the same, the memory is new. Each run gets an arena that is freed when it is over, so memory does not grow with the number of runs. The block starts with how long watch has been running and why it is running (W1), and then sync says what it does. An error that escapes a run is printed and does not stop the watch. Afterwards the watched files are looked at again, and the output is flushed, so that a pipe or a log sees it at once (W4).
+
+… watch, run sync :file: main.zig
+[source,zig]
+----
+// W1, W4: run sync, and look at the files again when it is over.
+{
+    var run_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer run_arena.deinit();
+    var run_ctx = ctx;
+    run_ctx.arena = run_arena.allocator();
+    try ctx.out.print("[{d:.1}s] {s}\n", .{ seconds(ctx.io, started), reason });
+    const result = syncOnce(run_ctx, options, inner.items) catch |e| blk: {
+        try ctx.err.print("litmus: {s}\n", .{@errorName(e)});
+        break :blk SyncResult{ .code = 1 };
+    };
+    const next = try Seen.take(ctx.io, result.watched);
+    if (!first) seen.deinit();
+    seen = next;
+    first = false;
+    try ctx.out.flush();
+    try ctx.err.flush();
+}
+----
+
+The waiting. Every interval each watched file is looked at, and compared with the look before (W3). The first look after a run is compared with the one made just after the run, so a save during the run is not lost. The debounce is told whether anything changed (W1). When it says that the files have been quiet for one interval, the heading is made from the files that differ from the look after the run, and the loop goes back to run sync.
+
+… watch, wait for a change :file: main.zig
+[source,zig]
+----
+// W1, W3: look every interval, until something changed and then stayed quiet.
+var last: ?Seen = null;
+defer if (last) |*l| l.deinit();
+while (true) {
+    try ctx.io.sleep(interval, .awake);
+    const now = try Seen.take(ctx.io, seen.paths);
+    var scratch = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer scratch.deinit();
+    const before = if (last) |l| l.snapshot else seen.snapshot;
+    const moved = (try watch.changed(scratch.allocator(), before, now.snapshot)).len > 0;
+    if (last) |*l| l.deinit();
+    last = now;
+    const t_now: i64 = @intCast(Io.Timestamp.now(ctx.io, .awake).nanoseconds);
+    if (!debounce.observe(moved, t_now)) continue;
+    // What changed since the run, named for the heading (W3).
+    const names = try watch.changed(scratch.allocator(), seen.snapshot, last.?.snapshot);
+    reason = try std.fmt.allocPrint(ctx.arena, "changed: {s}", .{try std.mem.join(scratch.allocator(), ", ", names)});
+    break;
+}
+----
+
+The set of files to watch is the documents that sync found, and the tangled files. Documents are found even when there are errors in them, so that fixing a document starts a run (W2, W5). Tangled files are given as paths from the current directory, since that is where they are looked at.
+
+… watchedPaths :file: main.zig
+[source,zig]
+----
+/// W2: the documents of the set and the tangled files, as paths from the current directory.
+fn watchedPaths(ctx: Context, options: Options, docs: []const types.Document, files: []const tangle.Tangled) ![]const []const u8 {
+    var paths: std.ArrayList([]const u8) = .empty;
+    for (docs) |doc| try paths.append(ctx.arena, doc.path);
+    for (files) |file| {
+        const path = if (std.mem.eql(u8, options.out_dir, ".")) file.path else try std.fs.path.join(ctx.arena, &.{ options.out_dir, file.path });
+        try paths.append(ctx.arena, path);
+    }
+    return paths.items;
+}
 ----
 
 `init` takes the same options as tangle, apart from `--force`. It is given the name Litmus was run as, because the paragraph it writes names that (I1).
@@ -685,7 +913,7 @@ defer out.flush() catch {};
 defer err.flush() catch {};
 ----
 
-The first argument selects the command, and `untangle` and `sync` are the two newest. An error that escapes a command, such as a failed write, is printed with its name and exits with 1.
+The first argument selects the command, and `untangle`, `sync` and `watch` are the three newest. An error that escapes a command, such as a failed write, is printed with its name and exits with 1.
 
 … main, dispatch :file: main.zig
 [source,zig]
@@ -697,6 +925,7 @@ const code = run: {
     if (std.mem.eql(u8, command, "init")) break :run initCommand(ctx, args[0], rest);
     if (std.mem.eql(u8, command, "untangle")) break :run untangleCommand(ctx, rest);
     if (std.mem.eql(u8, command, "sync")) break :run syncCommand(ctx, rest);
+    if (std.mem.eql(u8, command, "watch")) break :run watchCommand(ctx, rest);
     if (std.mem.eql(u8, command, "guide")) {
         try out.writeAll(guide_text);
         break :run 0;
@@ -708,6 +937,210 @@ const code = run: {
     try err.print("litmus: {s}\n", .{@errorName(e)});
     return 1;
 };
+----
+
+=== Looking at files
+
+`watch.zig` holds what watch needs that is not a command: looking at files, comparing two looks, and waiting until the files are quiet. It does no waiting itself and prints nothing.
+
+… :file: watch.zig
+[source,zig]
+----
+… header
+
+… Entry
+
+… take
+
+… changed
+
+… Debounce
+
+… tests
+----
+
+… header :file: watch.zig
+[source,zig]
+----
+//! What `litmus watch` needs that is not a command: a snapshot of the watched files, the
+//! comparison of two snapshots (W3), and the wait until the files have been quiet (W1).
+
+const std = @import("std");
+
+const Allocator = std.mem.Allocator;
+const Io = std.Io;
+----
+
+A look at one file is an `Entry`: whether the file exists, its size, and its modification time. A look at a list of files is a `Snapshot`. These three things are what W3 calls a change. Nothing of the contents is read, which is why a poll costs so little.
+
+… Entry :file: watch.zig
+[source,zig]
+----
+/// What was seen of one file: whether it exists, how big it was, and when it was changed.
+pub const Entry = struct {
+    path: []const u8,
+    exists: bool = false,
+    size: u64 = 0,
+    mtime: i96 = 0,
+};
+
+pub const Snapshot = struct { entries: []const Entry };
+----
+
+`take` looks at each path with `stat`. A path that cannot be looked at is a file that does not exist, which is also what a file that an editor has just removed, to replace it, looks like. The debounce covers that gap.
+
+… take :file: watch.zig
+[source,zig]
+----
+/// Looks at each path, relative to the current directory. A path that cannot be
+/// looked at is a file that does not exist.
+pub fn take(io: Io, arena: Allocator, paths: []const []const u8) Allocator.Error!Snapshot {
+    const entries = try arena.alloc(Entry, paths.len);
+    for (paths, entries) |path, *entry| {
+        entry.* = .{ .path = path };
+        const stat = Io.Dir.cwd().statFile(io, path, .{}) catch continue;
+        entry.exists = true;
+        entry.size = stat.size;
+        entry.mtime = stat.mtime.nanoseconds;
+    }
+    return .{ .entries = entries };
+}
+----
+
+`changed` compares two snapshots and names the paths that differ. A path that is in only one of the snapshots counts as a change, so a new include, or a tangled file that has just been made, shows up.
+
+… changed :file: watch.zig
+[source,zig]
+----
+/// The paths whose existence, size or modification time differ between two snapshots
+/// (W3). A path that is in only one of them is a change.
+pub fn changed(arena: Allocator, old: Snapshot, new: Snapshot) Allocator.Error![]const []const u8 {
+    var result: std.ArrayList([]const u8) = .empty;
+    var seen: std.StringHashMapUnmanaged(Entry) = .empty;
+    for (old.entries) |entry| try seen.put(arena, entry.path, entry);
+    for (new.entries) |entry| {
+        const before = seen.get(entry.path) orelse {
+            try result.append(arena, entry.path);
+            continue;
+        };
+        _ = seen.remove(entry.path);
+        if (before.exists != entry.exists or before.size != entry.size or before.mtime != entry.mtime) {
+            try result.append(arena, entry.path);
+        }
+    }
+    for (old.entries) |entry| {
+        if (seen.contains(entry.path)) try result.append(arena, entry.path);
+    }
+    return result.items;
+}
+----
+
+The debounce is a small state machine and takes the time as a number, so it can be tested without waiting. Every look tells it whether anything changed. A change starts the wait, and any further change starts it again. When a look finds nothing changed and the time since the last change has reached the quiet time, `observe` returns true, once. That is the moment for a run (W1).
+
+… Debounce :file: watch.zig
+[source,zig]
+----
+/// W1: a change starts a wait, every further change starts it again, and the files are
+/// ready to be acted on when nothing changed for `quiet` nanoseconds.
+pub const Debounce = struct {
+    quiet: i64,
+    last_change: ?i64 = null,
+
+    /// Tells the debounce what one look found, and the time of it. Returns true once, when
+    /// the files have been quiet for long enough after a change.
+    pub fn observe(self: *Debounce, found_change: bool, now: i64) bool {
+        if (found_change) {
+            self.last_change = now;
+            return false;
+        }
+        const last = self.last_change orelse return false;
+        if (now - last < self.quiet) return false;
+        self.last_change = null;
+        return true;
+    }
+};
+----
+
+The tests check each part with fake snapshots, and the look at real files with a temporary directory. The debounce tests use made-up times: a quiet period, a change that restarts the wait, and a change after the quiet that starts a new one.
+
+… tests :file: watch.zig
+[source,zig]
+----
+// Tests ----------------------------------------------------------------------
+
+const t = std.testing;
+
+fn file(path: []const u8, size: u64, mtime: i96) Entry {
+    return .{ .path = path, .exists = true, .size = size, .mtime = mtime };
+}
+
+fn expectChanged(old: []const Entry, new: []const Entry, want: []const []const u8) !void {
+    var arena_state = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena_state.deinit();
+    const got = try changed(arena_state.allocator(), .{ .entries = old }, .{ .entries = new });
+    try t.expectEqual(want.len, got.len);
+    for (want, got) |w, g| try t.expectEqualStrings(w, g);
+}
+
+test "W3: equal snapshots have no changes" {
+    try expectChanged(&.{ file("a", 1, 10), file("b", 2, 20) }, &.{ file("a", 1, 10), file("b", 2, 20) }, &.{});
+    try expectChanged(&.{}, &.{}, &.{});
+}
+
+test "W3: a change of size, of modification time, or of existence is a change" {
+    try expectChanged(&.{ file("a", 1, 10), file("b", 2, 20) }, &.{ file("a", 5, 10), file("b", 2, 20) }, &.{"a"});
+    try expectChanged(&.{ file("a", 1, 10), file("b", 2, 20) }, &.{ file("a", 1, 10), file("b", 2, 21) }, &.{"b"});
+    try expectChanged(&.{file("a", 1, 10)}, &.{.{ .path = "a" }}, &.{"a"});
+    try expectChanged(&.{.{ .path = "a" }}, &.{file("a", 1, 10)}, &.{"a"});
+    try expectChanged(&.{.{ .path = "a" }}, &.{.{ .path = "a" }}, &.{});
+}
+
+test "W3: a path in only one snapshot is a change" {
+    try expectChanged(&.{file("a", 1, 10)}, &.{ file("a", 1, 10), file("new", 1, 1) }, &.{"new"});
+    try expectChanged(&.{ file("a", 1, 10), file("gone", 1, 1) }, &.{file("a", 1, 10)}, &.{"gone"});
+}
+
+test "W3: take looks at real files, and a missing file does not exist" {
+    var tmp = t.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena_state = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    try tmp.dir.writeFile(t.io, .{ .sub_path = "f.txt", .data = "abc" });
+    const path = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}/f.txt", .{tmp.sub_path});
+    const missing = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}/none.txt", .{tmp.sub_path});
+    const before = try take(t.io, a, &.{ path, missing });
+    try t.expect(before.entries[0].exists);
+    try t.expectEqual(3, before.entries[0].size);
+    try t.expect(!before.entries[1].exists);
+    try t.expectEqual(0, (try changed(a, before, try take(t.io, a, &.{ path, missing }))).len);
+    try tmp.dir.writeFile(t.io, .{ .sub_path = "f.txt", .data = "abcdef" });
+    const after = try changed(a, before, try take(t.io, a, &.{ path, missing }));
+    try t.expectEqual(1, after.len);
+    try t.expectEqualStrings(path, after[0]);
+}
+
+test "W1: sync is ready when the files have been quiet for one interval" {
+    var d: Debounce = .{ .quiet = 200 };
+    try t.expect(!d.observe(false, 0));
+    try t.expect(!d.observe(true, 200));
+    try t.expect(!d.observe(false, 300));
+    try t.expect(d.observe(false, 400));
+    // Once only.
+    try t.expect(!d.observe(false, 600));
+}
+
+test "W1: every further change starts the wait again" {
+    var d: Debounce = .{ .quiet = 200 };
+    try t.expect(!d.observe(true, 0));
+    try t.expect(!d.observe(true, 200));
+    try t.expect(!d.observe(true, 400));
+    try t.expect(!d.observe(false, 500));
+    try t.expect(d.observe(false, 600));
+    // A change after a quiet time starts a new wait.
+    try t.expect(!d.observe(true, 800));
+    try t.expect(d.observe(false, 1000));
+}
 ----
 
 === Check
@@ -1271,7 +1704,7 @@ test "I3: .gitignore gets the directory once" {
 
 === The guide
 
-The guide is what `litmus guide` prints. Agents read it before they change a tangled file. It tells them how to find their way (`.litmus/map`, `litmus where`), how to change code so that the documents and the files stay equal, and what never to do. Changing code now goes through untangle: the agent edits and tests the tangled file, runs untangle, writes the prose it asks for, and checks. The guide also says what to do when untangle cannot place a line, or finds that the documents changed too. It is written for an agent, in plain words and short sentences.
+The guide is what `litmus guide` prints. Agents read it before they change a tangled file. It tells them how to find their way (`.litmus/map`, `litmus where`), how to change code so that the documents and the files stay equal, and what never to do. Changing code now goes through untangle: the agent edits and tests the tangled file, runs untangle, writes the prose it asks for, and checks. If watch is running, it does the untangling on every save, and the agent only has to read its output. The guide also says what to do when untangle cannot place a line, or finds that the documents changed too. It is written for an agent, in plain words and short sentences.
 
 The spec includes this file, so the text exists once.
 
@@ -1304,6 +1737,9 @@ Changing code
    If new code deserves a block of its own, put it in one, labeled with its name
    and file and inserted by exactly one `… name` line.
 4. Run the check command from AGENTS.md. The change is done only when it passes.
+
+If `litmus watch` is running in this project, it does step 2 by itself whenever a
+file is saved. Read its output: it still lists the blocks that need prose.
 
 Never
 - edit .litmus/map;

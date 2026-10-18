@@ -21,6 +21,9 @@ Changing code
    and file and inserted by exactly one `… name` line.
 4. Run the check command from AGENTS.md. The change is done only when it passes.
 
+If `litmus watch` is running in this project, it does step 2 by itself whenever a
+file is saved. Read its output: it still lists the blocks that need prose.
+
 Never
 - edit .litmus/map;
 - run `litmus tangle --force` or `litmus untangle --force` unless the user asks:

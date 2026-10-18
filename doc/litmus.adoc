@@ -297,7 +297,7 @@ placed at a boundary: hello.zig:5 went after "… greet" at hello.adoc:9
 
 *Rule W5.* If a run stops, because both sides changed or a document has an error, watch prints why and waits for the next change. It does not run again by itself, and it never forces.
 
-Each run is printed as a block: the time, the files that changed, and then what sync says. Nothing is printed when a look finds no change. Watch runs until it is stopped.
+Each run is printed as a block: a heading with the seconds since watch started and the files that changed, and then what sync says. Nothing is printed when a look finds no change. Watch runs until it is stopped.
 
 == Weave
 
