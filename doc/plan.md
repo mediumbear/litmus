@@ -20,6 +20,7 @@ Untangle, watch and weave come after, each with its own plan.
 | File | Responsibility |
 |---|---|
 | `src/main.zig` | The command line: arguments, the commands, printing errors. |
+| `src/types.zig` | The types the stages share: documents, labels, blocks, runs, diagnostics. |
 | `src/scan.zig` | Classifies the lines of one document, asciidoc or Markdown. The block state machine. No IO. |
 | `src/parse.zig` | From classified lines to labels, blocks, excerpt commands, includes and `:litmus-dir:`. No IO. |
 | `src/docset.zig` | Reads documents and follows `include::`, giving the document set in reading order. |
@@ -32,7 +33,7 @@ Untangle, watch and weave come after, each with its own plan.
 | `src/init.zig` | The `init` command. |
 | `src/tests.zig` | Imports every file, so `zig build test` runs all unit tests. |
 
-The main types, all allocated in the run's arena:
+The main types, all allocated in the run's arena (they live in `src/types.zig`):
 
 ```zig
 const Document = struct { path: []const u8, format: enum { asciidoc, markdown }, lines: []const []const u8, dir: []const u8 };
@@ -169,17 +170,18 @@ Report all problems as diagnostics. Do not stop at the first.
   - For a file that differs, report its first differing line, and where that line is in the document, found through the runs. A difference past the end of the tangled text is reported at the file's last run.
   - A difference in the executable permission is reported too.
   - It exits with 1 if anything differs.
-- **`where FILE:LINE`** reads the map, finds the run, and prints `document:line (excerpt)`. If there is no map, it says to run tangle first.
+- **`where [-o DIR] FILE:LINE`** reads the map, finds the run, and prints `document:line (excerpt)`. If there is no map, it says to run tangle first.
 - **`guide`** prints `src/guide.txt`. Move the guide's text from the spec into `src/guide.txt`, and replace the spec's block with `include::../src/guide.txt[]`, so the text exists once.
 - **`init [-o DIR] DOCUMENT...`** follows I1–I4. Write each changed file whole, like tangle.
 
 The golden tests live in `test/cases/<name>/`. Each case has:
 
 - its documents,
-- `args`, the command-line arguments,
-- `expected/`, the tree tangle should produce,
-- `expected.map`,
-- `expected.err`, what stderr should say.
+- `args`, the options and documents that follow `tangle -o OUT`,
+- `before/`, if the output directory starts with files in it (for T5 and T6),
+- `expected/`, the tree the output directory should hold afterwards, map included,
+- `expected.err`, what stderr should say,
+- `exit`, the exit code, if it is not 0.
 
 `test/run.sh`, run by `zig build cases`, does this for every case:
 
@@ -188,7 +190,7 @@ The golden tests live in `test/cases/<name>/`. Each case has:
 3. Change one byte in one output file. `check` must fail, naming the expected document line.
 4. Run `where` for a few lines, and compare.
 
-Init has its own cases, run in an empty temporary directory:
+Init has its own cases, each with a `cmd` file, a `before/` tree and the `expected/` tree after the command. Each runs in a sandbox:
 
 - a project with none of the three files;
 - an `AGENTS.md` without the paragraph, and one with an old paragraph to replace;

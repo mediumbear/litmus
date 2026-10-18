@@ -8,3 +8,10 @@ Litmus is a literate programming tool: it tangles asciidoc and Markdown document
 - Only the standard library. No regular expressions. Speed matters: Litmus runs on every save.
 - Run `zig build test` after every change. Before finishing, run `zig build cases` too, and `zig build self` once it exists.
 - Plans and notes are Markdown. The spec and the literate documents are asciidoc, rendered by `doc/build.sh` into `doc/build/`. Write all of them in plain, direct prose.
+
+<!-- litmus -->
+This project uses Litmus: some source files are tangled from documents that
+explain them. Run `zig-out/bin/litmus guide` before changing any file listed in
+.litmus/map. Tangle with `zig-out/bin/litmus tangle doc/implementation.adoc`, and make sure
+`zig-out/bin/litmus check doc/implementation.adoc` passes before finishing.
+<!-- /litmus -->

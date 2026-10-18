@@ -1,0 +1,1035 @@
+== The Commands
+
+:litmus-dir: src
+
+Everything so far was a stage. This chapter puts the stages together into the five commands of the spec:
+
+`litmus tangle [-o DIR] [--force] DOCUMENT...`::
+Loads the document set, resolves and checks it, tangles, and writes the files and the map.
+
+`litmus check [-o DIR] DOCUMENT...`::
+Tangles in memory and compares the result with the files on disk. This is the round-trip check that an agent runs after every change.
+
+`litmus where [-o DIR] FILE:LINE`::
+Looks a line up in the map.
+
+`litmus guide`::
+Prints the guide for agents.
+
+`litmus init [-o DIR] DOCUMENT...`::
+Prepares a project so that agents find the guide.
+
+`main.zig` reads the command line and runs the right command. `compare.zig` is the comparison that `check` makes, and `init.zig` is init. The text of the guide is a file of its own, which the program carries inside it.
+
+=== The command line
+
+`main.zig` has the command line and the commands that are only a few steps long.
+
+… :file: main.zig
+[source,zig]
+----
+… header
+
+… usage
+
+… Context
+
+… Options
+
+… DiskFs
+
+… Built
+
+… documentsOk
+
+… tangleCommand
+
+… checkCommand
+
+… whereCommand
+
+… initCommand
+
+… main
+----
+
+The file imports every stage, since it is where they meet.
+
+… header :file: main.zig
+[source,zig]
+----
+//! The Litmus command line. See doc/litmus.adoc for the rules.
+
+const std = @import("std");
+const types = @import("types.zig");
+const docset = @import("docset.zig");
+const resolve = @import("resolve.zig");
+const tangle = @import("tangle.zig");
+const map = @import("map.zig");
+const output = @import("output.zig");
+const compare = @import("compare.zig");
+const init_command = @import("init.zig");
+
+const Allocator = std.mem.Allocator;
+const Io = std.Io;
+----
+
+The usage text is printed for any wrong command line, and the guide is embedded in the program with `@embedFile`, so that `litmus guide` always matches the version of Litmus in use.
+
+… usage :file: main.zig
+[source,zig]
+----
+const usage =
+    \\Usage: litmus tangle [-o DIR] [--force] DOCUMENT...
+    \\       litmus check [-o DIR] DOCUMENT...
+    \\       litmus where [-o DIR] FILE:LINE
+    \\       litmus guide
+    \\       litmus init [-o DIR] DOCUMENT...
+    \\
+;
+
+const guide_text = @embedFile("guide.txt");
+----
+
+Every command gets a `Context`: the IO object, the arena, and the two output streams. Normal output goes to `out` and problems to `err`.
+
+… Context :file: main.zig
+[source,zig]
+----
+const Context = struct {
+    io: Io,
+    arena: Allocator,
+    out: *Io.Writer,
+    err: *Io.Writer,
+};
+----
+
+The options are `-o DIR`, and `--force` for tangle only. Anything else that starts with a hyphen is an error, and the rest are the positional arguments: documents, or the `FILE:LINE` of `where`. `parseOptions` prints the problem itself and returns null, and the caller exits with 2.
+
+… Options :file: main.zig
+[source,zig]
+----
+const Options = struct {
+    out_dir: []const u8 = ".",
+    force: bool = false,
+    positional: []const []const u8 = &.{},
+};
+
+/// Reads `-o DIR`, and `--force` when allowed. Prints the problem and returns null on a usage error.
+fn parseOptions(ctx: Context, args: []const []const u8, allow_force: bool) !?Options {
+    var options: Options = .{};
+    var positional: std.ArrayList([]const u8) = .empty;
+    var i: usize = 0;
+    while (i < args.len) : (i += 1) {
+        const arg = args[i];
+        if (std.mem.eql(u8, arg, "-o")) {
+            i += 1;
+            if (i == args.len) {
+                try ctx.err.writeAll("litmus: -o needs a directory\n");
+                return null;
+            }
+            options.out_dir = args[i];
+        } else if (allow_force and std.mem.eql(u8, arg, "--force")) {
+            options.force = true;
+        } else if (arg.len > 1 and arg[0] == '-') {
+            try ctx.err.print("litmus: unknown option {s}\n", .{arg});
+            return null;
+        } else {
+            try positional.append(ctx.arena, arg);
+        }
+    }
+    options.positional = positional.items;
+    return options;
+}
+----
+
+The real file system, for the loader of chapter 4. A file that cannot be read is a `null`, and the loader turns that into C10.
+
+… DiskFs :file: main.zig
+[source,zig]
+----
+/// Reads documents from the current directory.
+const DiskFs = struct {
+    io: Io,
+
+    pub fn read(self: *DiskFs, arena: Allocator, path: []const u8) ?[]const u8 {
+        return Io.Dir.cwd().readFileAlloc(self.io, path, arena, .limited(1 << 30)) catch null;
+    }
+};
+----
+
+`build` is shared by tangle and check: load, resolve, tangle. If any stage reports a problem, the diagnostics are sorted, printed, and `null` is returned. When the loading stage has found problems, the checks of the whole set are not run, because they would be answers about a set that was read wrongly: a label that failed to parse would make its excerpt unused, and so on.
+
+… Built :file: main.zig
+[source,zig]
+----
+const Built = struct {
+    docs: []const types.Document,
+    files: []const tangle.Tangled,
+};
+
+fn printDiagnostics(ctx: Context, diags: *types.Diagnostics, docs: []const types.Document) !void {
+    diags.sort();
+    for (diags.list.items) |d| {
+        const path = docs[d.doc].path;
+        if (d.line == 0) {
+            try ctx.err.print("{s}: {s}\n", .{ path, d.message });
+        } else {
+            try ctx.err.print("{s}:{d}: {s}\n", .{ path, d.line, d.message });
+        }
+    }
+}
+
+/// Loads, checks and tangles the document set. On errors it prints them and returns null.
+fn build(ctx: Context, documents: []const []const u8) !?Built {
+    var diags = types.Diagnostics.init(ctx.arena);
+    var fs: DiskFs = .{ .io = ctx.io };
+    const set = try docset.load(ctx.arena, &fs, documents, &diags);
+    // Mistakes in the structure make the checks of the whole set misleading.
+    if (diags.list.items.len == 0) {
+        const resolved = try resolve.resolve(ctx.arena, set.docs, set.blocks, &diags);
+        if (diags.list.items.len == 0) {
+            return .{ .docs = set.docs, .files = try tangle.tangleAll(ctx.arena, resolved) };
+        }
+    }
+    try printDiagnostics(ctx, &diags, set.docs);
+    return null;
+}
+----
+
+A document with an extension that Litmus does not read is a usage error, checked before any work is done.
+
+… documentsOk :file: main.zig
+[source,zig]
+----
+/// Checks that each document has a kind that Litmus reads.
+fn documentsOk(ctx: Context, documents: []const []const u8) !bool {
+    if (documents.len == 0) {
+        try ctx.err.writeAll(usage);
+        return false;
+    }
+    for (documents) |path| {
+        if (docset.formatOf(path) == null) {
+            try ctx.err.print("litmus: {s} is not a .adoc, .asciidoc, .asc or .md document\n", .{path});
+            return false;
+        }
+    }
+    return true;
+}
+----
+
+=== The commands
+
+`tangle` builds the set, makes the output directory, and writes. The report is printed after: each conflict (T6), each file written, and each file that is no longer tangled (T5). Files written are on standard output and problems on standard error. The exit code is 1 when a conflict or a damaged map stopped the tangle.
+
+… tangleCommand :file: main.zig
+[source,zig]
+----
+fn tangleCommand(ctx: Context, args: []const []const u8) !u8 {
+    const options = (try parseOptions(ctx, args, true)) orelse return 2;
+    if (!try documentsOk(ctx, options.positional)) return 2;
+    const built = (try build(ctx, options.positional)) orelse return 1;
+
+    … tangle, write
+
+    … tangle, report
+    return if (outcome.conflicts.len > 0) 1 else 0;
+}
+----
+
+The output directory is created if it is missing. The map's text is made from the runs, and handed to the writer of chapter 7 with the files.
+
+… tangle, write :file: main.zig
+[source,zig]
+----
+const cwd = Io.Dir.cwd();
+try cwd.createDirPath(ctx.io, options.out_dir);
+var dir = try cwd.openDir(ctx.io, options.out_dir, .{});
+defer dir.close(ctx.io);
+const map_text = try map.render(ctx.arena, built.docs, built.files);
+const outcome = try output.write(ctx.io, ctx.arena, dir, built.files, map_text, options.force);
+----
+
+What the writer reports is printed here, for the user to act on.
+
+… tangle, report :file: main.zig
+[source,zig]
+----
+if (outcome.bad_map) |problem| {
+    try ctx.err.print("{s}: {s}; delete it, or tangle with --force\n", .{ output.map_path, problem });
+    return 1;
+}
+for (outcome.conflicts) |path| {
+    try ctx.err.print("{s}: changed since tangle wrote it (T6); carry the change into the documents, or tangle with --force\n", .{path});
+}
+for (outcome.written) |path| try ctx.out.print("wrote {s}\n", .{path});
+for (outcome.orphans) |path| try ctx.err.print("{s}: no longer tangled (T5); left in place\n", .{path});
+----
+
+`check` builds the same set, and does not write anything. It compares each file with the one on disk, and prints each difference. It exits with 1 if there is any.
+
+… checkCommand :file: main.zig
+[source,zig]
+----
+fn checkCommand(ctx: Context, args: []const []const u8) !u8 {
+    const options = (try parseOptions(ctx, args, false)) orelse return 2;
+    if (!try documentsOk(ctx, options.positional)) return 2;
+    const built = (try build(ctx, options.positional)) orelse return 1;
+
+    var dir = Io.Dir.cwd().openDir(ctx.io, options.out_dir, .{}) catch |e| {
+        try ctx.err.print("{s}: {s}\n", .{ options.out_dir, @errorName(e) });
+        return 1;
+    };
+    defer dir.close(ctx.io);
+    const differences = try compare.compare(ctx.io, ctx.arena, dir, built.docs, built.files);
+    for (differences) |difference| try difference.print(ctx.err);
+    return if (differences.len > 0) 1 else 0;
+}
+----
+
+`where` needs no documents: it reads the map. The argument is `FILE:LINE`, split at the last colon, so a path may hold one.
+
+… whereCommand :file: main.zig
+[source,zig]
+----
+fn whereCommand(ctx: Context, args: []const []const u8) !u8 {
+    const options = (try parseOptions(ctx, args, false)) orelse return 2;
+    if (options.positional.len != 1) {
+        try ctx.err.writeAll(usage);
+        return 2;
+    }
+    … where, read the target
+
+    … where, read the map
+    … where, find the line
+    return 0;
+}
+----
+
+The target is cut at its last colon, and the line must be a number.
+
+… where, read the target :file: main.zig
+[source,zig]
+----
+const target = options.positional[0];
+const colon = std.mem.lastIndexOfScalar(u8, target, ':') orelse {
+    try ctx.err.writeAll(usage);
+    return 2;
+};
+const line = std.fmt.parseInt(u32, target[colon + 1 ..], 10) catch {
+    try ctx.err.writeAll(usage);
+    return 2;
+};
+const path = target[0..colon];
+----
+
+The map is read from the output directory. Without one, the message says to tangle first. A map that cannot be read says the same.
+
+… where, read the map :file: main.zig
+[source,zig]
+----
+var dir = Io.Dir.cwd().openDir(ctx.io, options.out_dir, .{}) catch |e| {
+    try ctx.err.print("{s}: {s}\n", .{ options.out_dir, @errorName(e) });
+    return 1;
+};
+defer dir.close(ctx.io);
+const map_text = try output.readOrNull(ctx.io, ctx.arena, dir, output.map_path) orelse {
+    try ctx.err.print("{s}/{s} does not exist; run litmus tangle first\n", .{ options.out_dir, output.map_path });
+    return 1;
+};
+const parsed = map.read(ctx.arena, map_text) catch {
+    try ctx.err.print("{s}/{s} cannot be read; run litmus tangle first\n", .{ options.out_dir, output.map_path });
+    return 1;
+};
+----
+
+Then the file, the run that holds the line, and the answer. The document line is the run's first line plus how far the line is into the run. A file root is called `file root` in the answer.
+
+… where, find the line :file: main.zig
+[source,zig]
+----
+const file = parsed.find(path) orelse {
+    try ctx.err.print("{s}: not a tangled file; the map lists the files on its \"file\" lines\n", .{path});
+    return 1;
+};
+const at = map.findRun(file.runs, line) orelse {
+    try ctx.err.print("{s}:{d}: no such line\n", .{ path, line });
+    return 1;
+};
+const run = file.runs[at];
+const excerpt = if (std.mem.eql(u8, run.excerpt, ":file:")) "file root" else run.excerpt;
+try ctx.out.print("{s}:{d} ({s})\n", .{ run.doc, run.doc_line + (line - run.line), excerpt });
+----
+
+`init` takes the same options as tangle, apart from `--force`. It is given the name Litmus was run as, because the paragraph it writes names that (I1).
+
+… initCommand :file: main.zig
+[source,zig]
+----
+fn initCommand(ctx: Context, exe: []const u8, args: []const []const u8) !u8 {
+    const options = (try parseOptions(ctx, args, false)) orelse return 2;
+    if (!try documentsOk(ctx, options.positional)) return 2;
+    return init_command.run(ctx.io, ctx.arena, .{ .exe = exe, .dir = options.out_dir, .documents = options.positional }, ctx.out, ctx.err);
+}
+----
+
+Last, `main`. It makes the two output streams, parses the first argument, and runs the command.
+
+… main :file: main.zig
+[source,zig]
+----
+pub fn main(init: std.process.Init) !u8 {
+    const arena = init.arena.allocator();
+    const io = init.io;
+
+    … main, the output streams
+
+    const args = try init.minimal.args.toSlice(arena);
+    if (args.len < 2) {
+        try err.writeAll(usage);
+        return 2;
+    }
+    const ctx: Context = .{ .io = io, .arena = arena, .out = out, .err = err };
+    const command = args[1];
+    const rest = args[2..];
+    … main, dispatch
+    return code;
+}
+----
+
+Standard output and standard error are buffered, and flushed when `main` returns. They are written in streaming mode, which does not depend on a position in the file, so the two can share one file when a caller redirects both to it.
+
+… main, the output streams :file: main.zig
+[source,zig]
+----
+var out_buf: [64 * 1024]u8 = undefined;
+var out_writer: Io.File.Writer = .initStreaming(.stdout(), io, &out_buf);
+const out = &out_writer.interface;
+var err_buf: [4096]u8 = undefined;
+var err_writer: Io.File.Writer = .initStreaming(.stderr(), io, &err_buf);
+const err = &err_writer.interface;
+defer out.flush() catch {};
+defer err.flush() catch {};
+----
+
+The first argument selects the command. An error that escapes a command, such as a failed write, is printed with its name and exits with 1.
+
+… main, dispatch :file: main.zig
+[source,zig]
+----
+const code = run: {
+    if (std.mem.eql(u8, command, "tangle")) break :run tangleCommand(ctx, rest);
+    if (std.mem.eql(u8, command, "check")) break :run checkCommand(ctx, rest);
+    if (std.mem.eql(u8, command, "where")) break :run whereCommand(ctx, rest);
+    if (std.mem.eql(u8, command, "init")) break :run initCommand(ctx, args[0], rest);
+    if (std.mem.eql(u8, command, "guide")) {
+        try out.writeAll(guide_text);
+        break :run 0;
+    }
+    try err.print("litmus: unknown command {s}\n", .{command});
+    try err.writeAll(usage);
+    break :run 2;
+} catch |e| {
+    try err.print("litmus: {s}\n", .{@errorName(e)});
+    return 1;
+};
+----
+
+=== Check
+
+`check` has to say more than "different". The comparison names the first line that differs, and the line of the document where it came from, which is what the writer needs to fix.
+
+… :file: compare.zig
+[source,zig]
+----
+… header
+
+… Difference
+
+… lineOf
+
+… compareFile
+
+… compare
+
+… tests
+----
+
+… header :file: compare.zig
+[source,zig]
+----
+//! The `check` command's comparison of tangled text with the files on disk.
+
+const std = @import("std");
+const types = @import("types.zig");
+const map = @import("map.zig");
+const output = @import("output.zig");
+const tangle = @import("tangle.zig");
+
+const Allocator = std.mem.Allocator;
+const Io = std.Io;
+----
+
+A `Difference` is a missing file, a file with different text, or a file whose executable bit is wrong (L9). For different text it keeps the first line that differs, the tangled line and the line on disk, and where the tangled line came from. `print` writes it for `check`, in a form that begins with `file:line:`, like a compiler's message.
+
+… Difference :file: compare.zig
+[source,zig]
+----
+pub const Difference = struct {
+    path: []const u8,
+    kind: enum { missing, differs, should_be_executable, should_not_be_executable },
+    /// For `differs`: the first line that differs, counting from 1.
+    line: u32 = 0,
+    /// The tangled line and the line on disk, if each exists.
+    expected: ?[]const u8 = null,
+    found: ?[]const u8 = null,
+    /// Where the tangled line, or for a difference past the end the file's last
+    /// line, came from.
+    origin: ?Origin = null,
+
+    pub const Origin = struct { doc: []const u8, line: u32, excerpt: []const u8 };
+
+    pub fn print(self: Difference, w: *Io.Writer) !void {
+        switch (self.kind) {
+            .missing => try w.print("{s}: missing\n", .{self.path}),
+            .should_be_executable => try w.print("{s}: should be executable\n", .{self.path}),
+            .should_not_be_executable => try w.print("{s}: should not be executable\n", .{self.path}),
+            .differs => {
+                try w.print("{s}:{d}: differs from the tangled text", .{ self.path, self.line });
+                if (self.origin) |o| {
+                    try w.print("; the line comes from {s}:{d} ({s})", .{ o.doc, o.line, o.excerpt });
+                }
+                try w.writeAll("\n");
+                try w.print("  tangled: {s}\n", .{self.expected orelse "(end of file)"});
+                try w.print("  on disk: {s}\n", .{self.found orelse "(end of file)"});
+            },
+        }
+    }
+};
+----
+
+The text of a line, counting from 1, or null past the end.
+
+… lineOf :file: compare.zig
+[source,zig]
+----
+/// The line `n` of a text, counting from 1, without its `\n`; null past the end.
+fn lineOf(text: []const u8, n: u32) ?[]const u8 {
+    var start: usize = 0;
+    var i: u32 = 1;
+    while (i < n) : (i += 1) {
+        start = (std.mem.indexOfScalarPos(u8, text, start, '\n') orelse return null) + 1;
+    }
+    if (start >= text.len) return null;
+    const end = std.mem.indexOfScalarPos(u8, text, start, '\n') orelse text.len;
+    return text[start..end];
+}
+----
+
+The first difference is found by comparing bytes, and the line is the number of newlines before that byte, plus one. Its origin comes from the runs, by the same search as `where`.
+
+A difference can also be past the end of the tangled text, when the file on disk has extra lines. There is no tangled line to point at, so the report names the file's last run, which is where the extra lines would belong.
+
+… compareFile :file: compare.zig
+[source,zig]
+----
+fn compareFile(docs: []const types.Document, file: tangle.Tangled, text: []const u8) !Difference {
+    const common = std.mem.indexOfDiff(u8, file.text, text) orelse unreachable;
+    const line: u32 = @intCast(std.mem.countScalar(u8, file.text[0..common], '\n') + 1);
+    var difference: Difference = .{
+        .path = file.path,
+        .kind = .differs,
+        .line = line,
+        .expected = lineOf(file.text, line),
+        .found = lineOf(text, line),
+    };
+    // A difference past the end of the tangled text is reported at its last run.
+    if (map.findRun(file.runs, line)) |at| {
+        const run = file.runs[at];
+        difference.origin = .{ .doc = docs[run.doc].path, .line = run.doc_line + (line - run.line), .excerpt = run.excerpt };
+    } else if (file.runs.len > 0) {
+        const run = file.runs[file.runs.len - 1];
+        difference.origin = .{ .doc = docs[run.doc].path, .line = run.doc_line + run.count - 1, .excerpt = run.excerpt };
+    }
+    return difference;
+}
+----
+
+`compare` goes through the tangled files. A file that does not exist is missing, and one with different text is compared line by line. The executable bit is checked too, where the system has one.
+
+… compare :file: compare.zig
+[source,zig]
+----
+/// Compares each tangled file with the file of the same path under `dir`.
+pub fn compare(io: Io, arena: Allocator, dir: Io.Dir, docs: []const types.Document, files: []const tangle.Tangled) ![]const Difference {
+    var result: std.ArrayList(Difference) = .empty;
+    for (files) |file| {
+        const text = try output.readOrNull(io, arena, dir, file.path) orelse {
+            try result.append(arena, .{ .path = file.path, .kind = .missing });
+            continue;
+        };
+        if (!std.mem.eql(u8, text, file.text)) {
+            try result.append(arena, try compareFile(docs, file, text));
+        }
+        if (comptime Io.File.Permissions.has_executable_bit) {
+            const stat = try dir.statFile(io, file.path, .{});
+            if (output.isExecutable(stat.permissions) != file.executable) {
+                try result.append(arena, .{
+                    .path = file.path,
+                    .kind = if (file.executable) .should_be_executable else .should_not_be_executable,
+                });
+            }
+        }
+    }
+    return result.items;
+}
+----
+
+=== Tests
+
+The tests cover equal and missing files, the first differing line with its origin, a difference past the end in both directions, and a difference of permission.
+
+… tests :file: compare.zig
+[source,zig]
+----
+// Tests ----------------------------------------------------------------------
+
+const t = std.testing;
+
+const test_docs = [_]types.Document{.{ .path = "d.adoc", .format = .asciidoc, .lines = &.{}, .dir = "" }};
+const runs = [_]types.Run{
+    .{ .line = 1, .count = 2, .doc = 0, .doc_line = 10, .indent = 0, .excerpt = ":file:" },
+    .{ .line = 3, .count = 1, .doc = 0, .doc_line = 20, .indent = 4, .excerpt = "e" },
+};
+
+fn tangled(text: []const u8, executable: bool) tangle.Tangled {
+    return .{ .path = "a.txt", .executable = executable, .text = text, .runs = &runs };
+}
+
+fn compareText(tmp: *std.testing.TmpDir, a: Allocator, on_disk: ?[]const u8, file: tangle.Tangled) ![]const Difference {
+    if (on_disk) |bytes| try tmp.dir.writeFile(t.io, .{ .sub_path = "a.txt", .data = bytes });
+    return compare(t.io, a, tmp.dir, &test_docs, &.{file});
+}
+
+test "check: equal files and a missing file" {
+    var tmp = t.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena_state = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    try t.expectEqual(1, (try compareText(&tmp, a, null, tangled("x\n", false))).len);
+    try t.expectEqual(0, (try compareText(&tmp, a, "x\ny\nz\n", tangled("x\ny\nz\n", false))).len);
+    const missing = (try compare(t.io, a, tmp.dir, &test_docs, &.{.{ .path = "b.txt", .executable = false, .text = "", .runs = &.{} }}))[0];
+    try t.expectEqual(.missing, missing.kind);
+}
+
+test "check: the first differing line, and the document line it came from" {
+    var tmp = t.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena_state = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const d = (try compareText(&tmp, a, "x\nY\nz\n", tangled("x\ny\nz\n", false)))[0];
+    try t.expectEqual(2, d.line);
+    try t.expectEqualStrings("y", d.expected.?);
+    try t.expectEqualStrings("Y", d.found.?);
+    try t.expectEqual(11, d.origin.?.line);
+    const e = (try compareText(&tmp, a, "x\ny\nQ\n", tangled("x\ny\nz\n", false)))[0];
+    try t.expectEqual(3, e.line);
+    try t.expectEqual(20, e.origin.?.line);
+    try t.expectEqualStrings("e", e.origin.?.excerpt);
+}
+
+test "check: a difference past the end of the tangled text is reported at the last run" {
+    var tmp = t.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena_state = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const longer = (try compareText(&tmp, a, "x\ny\nz\nextra\n", tangled("x\ny\nz\n", false)))[0];
+    try t.expectEqual(4, longer.line);
+    try t.expect(longer.expected == null);
+    try t.expectEqualStrings("extra", longer.found.?);
+    try t.expectEqual(20, longer.origin.?.line);
+    const shorter = (try compareText(&tmp, a, "x\ny\n", tangled("x\ny\nz\n", false)))[0];
+    try t.expectEqual(3, shorter.line);
+    try t.expect(shorter.found == null);
+    try t.expectEqual(20, shorter.origin.?.line);
+}
+
+test "check: a difference of executable permission" {
+    if (comptime !Io.File.Permissions.has_executable_bit) return error.SkipZigTest;
+    var tmp = t.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena_state = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const d = (try compareText(&tmp, a, "x\n", tangled("x\n", true)))[0];
+    try t.expectEqual(.should_be_executable, d.kind);
+    try tmp.dir.setFilePermissions(t.io, "a.txt", .executable_file, .{});
+    const e = (try compareText(&tmp, a, null, tangled("x\n", false)))[0];
+    try t.expectEqual(.should_not_be_executable, e.kind);
+}
+----
+
+=== Init
+
+`init` makes a project ready for agents. Rules I1 to I4 of the spec say what it does. It does three things in the current directory:
+
+* It puts a paragraph in `AGENTS.md` that tells agents to run `litmus guide`, and how to tangle and check this project (I1).
+* It makes `CLAUDE.md` import `AGENTS.md`, since Claude Code reads that file and not `AGENTS.md` (I2).
+* It makes `.gitignore` ignore the map (I3).
+
+It creates what is missing and changes nothing else. A second run changes nothing (I4). Each function computes the new text of one file from its old text, and returns null when there is nothing to change. Only `run` touches the disk, so most of the tests need no files.
+
+… :file: init.zig
+[source,zig]
+----
+… header
+
+… Args
+
+… markers
+
+… paragraph
+
+… appended
+
+… applyAgents
+
+… hasLine
+
+… gitignore
+
+… run
+
+… tests
+----
+
+… header :file: init.zig
+[source,zig]
+----
+//! The `init` command (I1 to I4): prepares a project so that agents find the guide.
+
+const std = @import("std");
+const output = @import("output.zig");
+
+const Allocator = std.mem.Allocator;
+const Io = std.Io;
+----
+
+Init needs to know how Litmus was run, since the paragraph names that (I1); the output directory; and the documents.
+
+… Args :file: init.zig
+[source,zig]
+----
+pub const Args = struct {
+    /// How Litmus was run: argv[0].
+    exe: []const u8,
+    /// The `-o` directory, "." by default.
+    dir: []const u8,
+    documents: []const []const u8,
+};
+----
+
+The paragraph is found again by its two comment lines. `outputDir` gives the directory without a trailing slash, or null if it is the current directory, in which case the paragraph leaves out `-o` and the directory (I1).
+
+… markers :file: init.zig
+[source,zig]
+----
+const start_marker = "<!-- litmus -->";
+const end_marker = "<!-- /litmus -->";
+
+/// The directory without a trailing slash, or null for the current directory.
+fn outputDir(dir: []const u8) ?[]const u8 {
+    var d = dir;
+    while (std.mem.endsWith(u8, d, "/")) d = d[0 .. d.len - 1];
+    while (std.mem.startsWith(u8, d, "./")) d = d[2..];
+    if (d.len == 0 or std.mem.eql(u8, d, ".")) return null;
+    return d;
+}
+----
+
+The paragraph is a template with the pieces filled in. The command is called `litmus`, unless Litmus was run with a path (it has a slash), such as `tools/litmus`, in which case that path is used, so that the line works when Litmus is not on the `PATH`.
+
+… paragraph :file: init.zig
+[source,zig]
+----
+/// The paragraph of I1, with its two comment lines and a `\n` at the end.
+pub fn paragraph(arena: Allocator, args: Args) ![]const u8 {
+    const exe = if (std.mem.indexOfScalar(u8, args.exe, '/') != null) args.exe else "litmus";
+    const dir = outputDir(args.dir);
+    const flag = if (dir) |d| try std.fmt.allocPrint(arena, " -o {s}", .{d}) else "";
+    const map_dir = if (dir) |d| try std.fmt.allocPrint(arena, "{s}/", .{d}) else "";
+    const documents = try std.mem.join(arena, " ", args.documents);
+    return std.fmt.allocPrint(arena,
+        \\{s}
+        \\This project uses Litmus: some source files are tangled from documents that
+        \\explain them. Run `{s} guide` before changing any file listed in
+        \\{s}.litmus/map. Tangle with `{s} tangle{s} {s}`, and make sure
+        \\`{s} check{s} {s}` passes before finishing.
+        \\{s}
+        \\
+    , .{ start_marker, exe, map_dir, exe, flag, documents, exe, flag, documents, end_marker });
+}
+----
+
+`appended` adds text at the end of a file, making sure that the old text ends in a newline first. `findLine` looks for a line by its content, trimmed, and returns where it starts and ends in the text.
+
+… appended :file: init.zig
+[source,zig]
+----
+/// The text with a final `\n`, and `addition` after it.
+fn appended(arena: Allocator, existing: []const u8, addition: []const u8) ![]const u8 {
+    const newline: []const u8 = if (existing.len > 0 and existing[existing.len - 1] != '\n') "\n" else "";
+    return std.mem.concat(arena, u8, &.{ existing, newline, addition });
+}
+
+/// Finds a line of `text` that equals `marker` once trimmed: the offset of its start and of its end, past the `\n`.
+fn findLine(text: []const u8, marker: []const u8, from: usize) ?struct { start: usize, end: usize } {
+    var start = from;
+    while (start < text.len) {
+        const newline = std.mem.indexOfScalarPos(u8, text, start, '\n');
+        const end = if (newline) |n| n + 1 else text.len;
+        const line = std.mem.trim(u8, text[start..end], " \t\r\n");
+        if (std.mem.eql(u8, line, marker)) return .{ .start = start, .end = end };
+        start = end;
+    }
+    return null;
+}
+
+pub const AgentsError = error{UnclosedParagraph} || Allocator.Error;
+----
+
+=== AGENTS.md
+
+`applyAgents` makes the new text of `AGENTS.md` (I1). If the file has the paragraph already, it is replaced in place, so the text around it stays as it was. If it has not, the paragraph is added at the end, after a blank line. A file with the opening comment and no closing one is an error, because replacing something with no end would mean guessing.
+
+A file that comes out the same as it was returns null, which is how a second run changes nothing (I4).
+
+… applyAgents :file: init.zig
+[source,zig]
+----
+/// The new text of AGENTS.md (I1), or null when it stays as it is.
+pub fn applyAgents(arena: Allocator, existing: ?[]const u8, para: []const u8) AgentsError!?[]const u8 {
+    const text = existing orelse return para;
+    var result: []const u8 = undefined;
+    if (findLine(text, start_marker, 0)) |start| {
+        const end = findLine(text, end_marker, start.end) orelse return error.UnclosedParagraph;
+        result = try std.mem.concat(arena, u8, &.{ text[0..start.start], para, text[end.end..] });
+    } else {
+        result = try appended(arena, text, if (text.len > 0) try std.mem.concat(arena, u8, &.{ "\n", para }) else para);
+    }
+    return if (std.mem.eql(u8, result, text)) null else result;
+}
+----
+
+=== CLAUDE.md
+
+Claude Code reads `CLAUDE.md`. A line `@AGENTS.md` imports the other file (I2). If a line like that is there already, spaces around it do not matter, and there is nothing to do.
+
+… hasLine :file: init.zig
+[source,zig]
+----
+fn hasLine(text: []const u8, wanted: []const []const u8) bool {
+    var lines = std.mem.splitScalar(u8, text, '\n');
+    while (lines.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \t\r");
+        for (wanted) |w| if (std.mem.eql(u8, trimmed, w)) return true;
+    }
+    return false;
+}
+
+/// The new text of CLAUDE.md (I2), or null when it stays as it is.
+pub fn applyClaude(arena: Allocator, existing: ?[]const u8) !?[]const u8 {
+    const text = existing orelse return "@AGENTS.md\n";
+    if (hasLine(text, &.{"@AGENTS.md"})) return null;
+    return try appended(arena, text, "@AGENTS.md\n");
+}
+----
+
+=== .gitignore
+
+The map is not committed (I3). The entry is `.litmus/`, or `DIR/.litmus/` for another directory. An existing line that says the same, with or without the slash at the end or the one at the start, counts.
+
+… gitignore :file: init.zig
+[source,zig]
+----
+/// The entry I3 adds to .gitignore.
+pub fn ignoreEntry(arena: Allocator, dir: []const u8) ![]const u8 {
+    const d = outputDir(dir) orelse return ".litmus/";
+    return std.fmt.allocPrint(arena, "{s}/.litmus/", .{d});
+}
+
+/// The new text of .gitignore (I3), or null when it stays as it is.
+pub fn applyGitignore(arena: Allocator, existing: ?[]const u8, entry: []const u8) !?[]const u8 {
+    const line = try std.mem.concat(arena, u8, &.{ entry, "\n" });
+    const text = existing orelse return line;
+    const bare = std.mem.trimEnd(u8, entry, "/");
+    const rooted = try std.mem.concat(arena, u8, &.{ "/", entry });
+    const rooted_bare = try std.mem.concat(arena, u8, &.{ "/", bare });
+    if (hasLine(text, &.{ entry, bare, rooted, rooted_bare })) return null;
+    return try appended(arena, text, line);
+}
+----
+
+=== Running init
+
+`run` handles the three files in turn. It reads each, computes the new text, and writes it whole if there is any, saying `created` or `updated`. An error in one file does not stop the others, and makes the exit code 1.
+
+… run :file: init.zig
+[source,zig]
+----
+/// Runs init in the current directory, printing each change to `out`. Returns the exit code.
+pub fn run(io: Io, arena: Allocator, args: Args, out: *Io.Writer, err: *Io.Writer) !u8 {
+    const cwd = Io.Dir.cwd();
+    const entry = try ignoreEntry(arena, args.dir);
+    const para = try paragraph(arena, args);
+    var failed = false;
+
+    const names = [_][]const u8{ "AGENTS.md", "CLAUDE.md", ".gitignore" };
+    for (names) |name| {
+        const existing = try output.readOrNull(io, arena, cwd, name);
+        const updated: ?[]const u8 = if (std.mem.eql(u8, name, "AGENTS.md"))
+            applyAgents(arena, existing, para) catch |e| switch (e) {
+                error.UnclosedParagraph => {
+                    try err.print("{s}: has \"{s}\" but no \"{s}\" after it\n", .{ name, start_marker, end_marker });
+                    failed = true;
+                    continue;
+                },
+                else => return e,
+            }
+        else if (std.mem.eql(u8, name, "CLAUDE.md"))
+            try applyClaude(arena, existing)
+        else
+            try applyGitignore(arena, existing, entry);
+        const text = updated orelse continue;
+        try output.writeAtomic(io, cwd, name, text, false);
+        try out.print("{s} {s}\n", .{ if (existing == null) "created" else "updated", name });
+    }
+    return if (failed) 1 else 0;
+}
+----
+
+=== Tests
+
+The tests cover the paragraph (with the current directory, another directory, and a path as the command), the creation of each file, adding to a file, replacing an old paragraph, an unclosed paragraph, a `CLAUDE.md` that has the import and one that has not, and `.gitignore` entries in their spellings. Running twice is tested in the golden tests of chapter 9, since that is about the files.
+
+… tests :file: init.zig
+[source,zig]
+----
+// Tests ----------------------------------------------------------------------
+
+const t = std.testing;
+
+fn testArgs(dir: []const u8, exe: []const u8) Args {
+    return .{ .exe = exe, .dir = dir, .documents = &.{ "doc/a.adoc", "doc/b.md" } };
+}
+
+test "I1: the paragraph names the directory and the documents" {
+    var arena_state = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    try t.expectEqualStrings(
+        \\<!-- litmus -->
+        \\This project uses Litmus: some source files are tangled from documents that
+        \\explain them. Run `litmus guide` before changing any file listed in
+        \\.litmus/map. Tangle with `litmus tangle doc/a.adoc doc/b.md`, and make sure
+        \\`litmus check doc/a.adoc doc/b.md` passes before finishing.
+        \\<!-- /litmus -->
+        \\
+    , try paragraph(a, testArgs(".", "litmus")));
+    const other = try paragraph(a, testArgs("out/", "tools/litmus"));
+    try t.expect(std.mem.indexOf(u8, other, "Run `tools/litmus guide` before") != null);
+    try t.expect(std.mem.indexOf(u8, other, "out/.litmus/map. Tangle with `tools/litmus tangle -o out doc/a.adoc doc/b.md`") != null);
+    try t.expect(std.mem.indexOf(u8, other, "`tools/litmus check -o out doc/a.adoc doc/b.md` passes") != null);
+}
+
+test "I1: AGENTS.md is created, added to, and updated in place" {
+    var arena_state = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const para = try paragraph(a, testArgs(".", "litmus"));
+    try t.expectEqualStrings(para, (try applyAgents(a, null, para)).?);
+    const added = (try applyAgents(a, "# Notes\n\nSome text.", para)).?;
+    try t.expectEqualStrings("# Notes\n\nSome text.\n\n", added[0 .. added.len - para.len]);
+    try t.expectEqualStrings(para, added[added.len - para.len ..]);
+    // Twice changes nothing.
+    try t.expect(try applyAgents(a, added, para) == null);
+    // An old paragraph is replaced, and what is around it stays.
+    const old = "top\n<!-- litmus -->\nold words\n<!-- /litmus -->\nbottom\n";
+    const new_para = try paragraph(a, testArgs("out", "litmus"));
+    const replaced = (try applyAgents(a, old, new_para)).?;
+    try t.expectEqualStrings(try std.mem.concat(a, u8, &.{ "top\n", new_para, "bottom\n" }), replaced);
+    try t.expectError(error.UnclosedParagraph, applyAgents(a, "<!-- litmus -->\nx\n", para));
+    try t.expectEqualStrings(para, (try applyAgents(a, "", para)).?);
+}
+
+test "I2: CLAUDE.md imports AGENTS.md once" {
+    var arena_state = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    try t.expectEqualStrings("@AGENTS.md\n", (try applyClaude(a, null)).?);
+    try t.expectEqualStrings("Hello\n@AGENTS.md\n", (try applyClaude(a, "Hello")).?);
+    try t.expect(try applyClaude(a, "Hello\n  @AGENTS.md  \nmore\n") == null);
+    try t.expect(try applyClaude(a, "@AGENTS.md") == null);
+}
+
+test "I3: .gitignore gets the directory once" {
+    var arena_state = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    try t.expectEqualStrings(".litmus/", try ignoreEntry(a, "."));
+    try t.expectEqualStrings("out/.litmus/", try ignoreEntry(a, "out/"));
+    try t.expectEqualStrings(".litmus/\n", (try applyGitignore(a, null, ".litmus/")).?);
+    try t.expectEqualStrings("zig-out\n.litmus/\n", (try applyGitignore(a, "zig-out", ".litmus/")).?);
+    try t.expect(try applyGitignore(a, "x\n.litmus/\n", ".litmus/") == null);
+    try t.expect(try applyGitignore(a, "x\n/.litmus\n", ".litmus/") == null);
+    try t.expectEqualStrings(".litmus/\nout/.litmus/\n", (try applyGitignore(a, ".litmus/\n", "out/.litmus/")).?);
+}
+----
+
+=== The guide
+
+The guide is what `litmus guide` prints. Agents read it before they change a tangled file. It tells them how to find their way (`.litmus/map`, `litmus where`), how to change code so that the documents and the files stay equal, and what never to do. It is written for an agent, in plain words and short sentences.
+
+The spec includes this file, so the text exists once.
+
+… :file: guide.txt
+----
+… guide
+----
+
+… guide :file: guide.txt
+----
+Litmus: a guide for agents
+
+Some files in this project are tangled. Their code lives in documents, asciidoc or
+Markdown, that explain it. A tangled file must always equal what its documents
+tangle to. AGENTS.md gives this project's commands for tangle and check.
+
+Finding your way
+- .litmus/map lists every tangled file: each line starting with "file" names one.
+- `litmus where FILE:LINE` prints the document line, and the excerpt, that a line
+  of a tangled file came from. It works for lines in compiler errors too.
+- A document labels each block of code with the file it lands in:
+  `… name :file: path` for an excerpt, `… :file: path` for the start of a file.
+  Inside a block, a line `… name` inserts that excerpt, at that indent.
+
+Changing code
+1. Edit the tangled file and test it as usual.
+2. Make the same change in the document's block: `litmus where` finds it.
+3. Put new code in a new block, labeled with its name and file, inserted by
+   exactly one `… name` line, with prose before it saying what it does and why.
+4. Run the check command from AGENTS.md. The change is done only when it passes.
+
+Never
+- edit .litmus/map;
+- run `litmus tangle --force` unless the user asks: it overwrites edits in
+  tangled files;
+- start a line of code with `…` (U+2026);
+- leave a tangled file changed without the same change in its document.
+
+If tangle refuses because a file changed since it was tangled, the change is not
+in the documents yet: carry it over (step 2), then check.
+----

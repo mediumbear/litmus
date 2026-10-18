@@ -1,0 +1,714 @@
+== The Map and Writing Files
+
+:litmus-dir: src
+
+Tangling gives each file's text and runs, in memory. Two things remain: the map, which keeps the runs for later, and the files, which have to be written without hurting anyone's work.
+
+The map is a text file, `.litmus/map`, in the output directory. It lists every tangled file with a hash of the text that was written, and the runs of that file. It is not committed, and losing it loses nothing, since tangle can always make it again. What it makes possible:
+
+* `litmus where` turns a line of a tangled file back into a line of a document.
+* `litmus tangle` can tell a file that tangle wrote from one that someone edited since (T6).
+* `litmus tangle` can tell which files it tangled the last time, to report those that are no longer tangled (T5).
+
+=== The map
+
+The map has its own file. It writes the text of a map, reads one back, and finds the run that holds a line.
+
+… :file: map.zig
+[source,zig]
+----
+… header
+
+… header line
+
+… hashHex
+
+… render
+
+… map types
+
+… read
+
+… findRun
+
+… tests
+----
+
+… header :file: map.zig
+[source,zig]
+----
+//! The map: `.litmus/map` says where every line of every tangled file came from,
+//! and records what tangle last wrote (T6). It is text, with tabs between fields.
+
+const std = @import("std");
+const types = @import("types.zig");
+const tangle = @import("tangle.zig");
+
+const Allocator = std.mem.Allocator;
+const Sha256 = std.crypto.hash.sha2.Sha256;
+----
+
+The first line says which format the file is. A map in another format is rejected rather than guessed at, so a newer Litmus can change the format safely.
+
+… header line :file: map.zig
+[source,zig]
+----
+pub const header = "litmus map 1";
+----
+
+The hash of a file is its SHA-256, in lowercase hexadecimal. The standard library does the work.
+
+… hashHex :file: map.zig
+[source,zig]
+----
+/// The SHA-256 of a file's text, in lowercase hexadecimal.
+pub fn hashHex(text: []const u8) [Sha256.digest_length * 2]u8 {
+    var digest: [Sha256.digest_length]u8 = undefined;
+    Sha256.hash(text, &digest, .{});
+    return std.fmt.bytesToHex(digest, .lower);
+}
+----
+
+The map is one `file` line for each file, with the path and the hash, and under it one line for each run, with six fields separated by tabs: the line in the file, the count, the document, the line in the document, the indent, and the excerpt (`:file:` for a file root). Tabs separate the fields, which is why a path may not hold one (C7). The last field is the excerpt's name, which may hold anything but a newline, so the reader takes the rest of the line as the name.
+
+The document is written as a path, and not a number, so the map is readable and stays valid if the documents are reordered.
+
+… render :file: map.zig
+[source,zig]
+----
+/// The text of the map for tangled files whose runs refer to `docs`.
+pub fn render(arena: Allocator, docs: []const types.Document, files: []const tangle.Tangled) ![]const u8 {
+    var out: std.ArrayList(u8) = .empty;
+    try out.appendSlice(arena, header ++ "\n");
+    for (files) |file| {
+        try out.print(arena, "file\t{s}\t{s}\n", .{ file.path, &hashHex(file.text) });
+        for (file.runs) |run| {
+            try out.print(arena, "{d}\t{d}\t{s}\t{d}\t{d}\t{s}\n", .{ run.line, run.count, docs[run.doc].path, run.doc_line, run.indent, run.excerpt });
+        }
+    }
+    return out.items;
+}
+----
+
+Reading a map gives these types. They look like `Run`, but hold the document as text, since there are no documents loaded when `where` runs.
+
+… map types :file: map.zig
+[source,zig]
+----
+pub const MapRun = struct {
+    line: u32,
+    count: u32,
+    doc: []const u8,
+    doc_line: u32,
+    indent: u32,
+    excerpt: []const u8,
+};
+
+pub const MapFile = struct {
+    path: []const u8,
+    hash: []const u8,
+    runs: []const MapRun,
+};
+
+pub const Map = struct {
+    files: []const MapFile,
+
+    pub fn find(self: Map, path: []const u8) ?MapFile {
+        for (self.files) |file| if (std.mem.eql(u8, file.path, path)) return file;
+        return null;
+    }
+};
+----
+
+`read` checks the header, then reads lines. It rejects a map of another version, and a map that is damaged: a run before any file, a number that is not a number, a hash of the wrong length. The reader is strict because a wrong map misleads in silence.
+
+… read :file: map.zig
+[source,zig]
+----
+pub const ReadError = error{ UnsupportedMap, BadMap } || Allocator.Error;
+
+/// Reads a map. Anything but the first version is rejected.
+pub fn read(arena: Allocator, text: []const u8) ReadError!Map {
+    var lines = std.mem.splitScalar(u8, text, '\n');
+    const first = lines.next() orelse return error.BadMap;
+    if (!std.mem.eql(u8, first, header)) return error.UnsupportedMap;
+
+    var files: std.ArrayList(MapFile) = .empty;
+    var runs: std.ArrayList(MapRun) = .empty;
+    var current: ?MapFile = null;
+    while (lines.next()) |line| {
+        if (line.len == 0) continue;
+        var fields = std.mem.splitScalar(u8, line, '\t');
+        const head = fields.next().?;
+        if (std.mem.eql(u8, head, "file")) {
+            if (current) |*file| {
+                file.runs = try runs.toOwnedSlice(arena);
+                try files.append(arena, file.*);
+            }
+            const path = fields.next() orelse return error.BadMap;
+            const hash = fields.next() orelse return error.BadMap;
+            if (hash.len != Sha256.digest_length * 2 or fields.next() != null) return error.BadMap;
+            current = .{ .path = path, .hash = hash, .runs = &.{} };
+            continue;
+        }
+        if (current == null) return error.BadMap;
+        const count = fields.next() orelse return error.BadMap;
+        const doc = fields.next() orelse return error.BadMap;
+        const doc_line = fields.next() orelse return error.BadMap;
+        const indent = fields.next() orelse return error.BadMap;
+        const excerpt = fields.rest();
+        try runs.append(arena, .{
+            .line = std.fmt.parseInt(u32, head, 10) catch return error.BadMap,
+            .count = std.fmt.parseInt(u32, count, 10) catch return error.BadMap,
+            .doc = doc,
+            .doc_line = std.fmt.parseInt(u32, doc_line, 10) catch return error.BadMap,
+            .indent = std.fmt.parseInt(u32, indent, 10) catch return error.BadMap,
+            .excerpt = excerpt,
+        });
+    }
+    if (current) |*file| {
+        file.runs = try runs.toOwnedSlice(arena);
+        try files.append(arena, file.*);
+    }
+    return .{ .files = files.items };
+}
+----
+
+Runs are sorted by line, so the run that holds a line is found by binary search. `where` uses it on the map's runs, and `check` on the runs in memory, which is why it takes any slice of things that have a `line` and a `count`.
+
+… findRun :file: map.zig
+[source,zig]
+----
+/// The run holding `line` of a file, among runs in order; null if none does.
+pub fn findRun(runs: anytype, line: u32) ?usize {
+    var lo: usize = 0;
+    var hi: usize = runs.len;
+    while (lo < hi) {
+        const mid = lo + (hi - lo) / 2;
+        const run = runs[mid];
+        if (line < run.line) {
+            hi = mid;
+        } else if (line >= run.line + run.count) {
+            lo = mid + 1;
+        } else return mid;
+    }
+    return null;
+}
+----
+
+=== Tests
+
+The first test makes the map of the spec's example and compares it with the spec, including the hash of `hello.zig`. Then it reads the map back. The other tests reject maps that cannot be read, and search for lines in runs.
+
+… tests :file: map.zig
+[source,zig]
+----
+// Tests ----------------------------------------------------------------------
+
+const t = std.testing;
+
+test "M: the map of the spec's example, and the hash of its file" {
+    var arena_state = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const text =
+        \\const std = @import("std");
+        \\
+        \\pub fn main() void {
+        \\    std.debug.print("Hello, Litmus!\n", .{});
+        \\}
+        \\
+    ;
+    try t.expectEqualStrings("2bc975ea988a6520d4c5937fbec6d64a98ce153bb2dc852c50affe981da286c2", &hashHex(text));
+    const docs = [_]types.Document{.{ .path = "hello.adoc", .format = .asciidoc, .lines = &.{}, .dir = "" }};
+    const runs = [_]types.Run{
+        .{ .line = 1, .count = 1, .doc = 0, .doc_line = 24, .indent = 0, .excerpt = "imports" },
+        .{ .line = 2, .count = 2, .doc = 0, .doc_line = 7, .indent = 0, .excerpt = ":file:" },
+        .{ .line = 4, .count = 1, .doc = 0, .doc_line = 18, .indent = 4, .excerpt = "greet" },
+        .{ .line = 5, .count = 1, .doc = 0, .doc_line = 10, .indent = 0, .excerpt = ":file:" },
+    };
+    const rendered = try render(a, &docs, &.{.{ .path = "hello.zig", .executable = false, .text = text, .runs = &runs }});
+    try t.expectEqualStrings(
+        "litmus map 1\n" ++
+            "file\thello.zig\t2bc975ea988a6520d4c5937fbec6d64a98ce153bb2dc852c50affe981da286c2\n" ++
+            "1\t1\thello.adoc\t24\t0\timports\n" ++
+            "2\t2\thello.adoc\t7\t0\t:file:\n" ++
+            "4\t1\thello.adoc\t18\t4\tgreet\n" ++
+            "5\t1\thello.adoc\t10\t0\t:file:\n",
+        rendered,
+    );
+    const map = try read(a, rendered);
+    try t.expectEqual(1, map.files.len);
+    const file = map.find("hello.zig").?;
+    try t.expectEqual(4, file.runs.len);
+    try t.expectEqualStrings("greet", file.runs[2].excerpt);
+    try t.expectEqual(4, file.runs[2].indent);
+    try t.expect(map.find("other") == null);
+}
+
+test "M: reading rejects other versions and broken lines" {
+    var arena_state = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    try t.expectError(error.UnsupportedMap, read(a, "litmus map 2\n"));
+    try t.expectError(error.UnsupportedMap, read(a, ""));
+    try t.expectError(error.BadMap, read(a, "litmus map 1\n1\t1\td\t1\t0\tx\n"));
+    try t.expectError(error.BadMap, read(a, "litmus map 1\nfile\tp\tabc\n"));
+    try t.expectError(error.BadMap, read(a, "litmus map 1\nfile\tp\t0000000000000000000000000000000000000000000000000000000000000000\nx\t1\td\t1\t0\tx\n"));
+    try t.expectEqual(0, (try read(a, "litmus map 1\n")).files.len);
+}
+
+test "findRun finds the run that holds a line" {
+    const runs = [_]types.Run{
+        .{ .line = 1, .count = 1, .doc = 0, .doc_line = 24, .indent = 0, .excerpt = "a" },
+        .{ .line = 2, .count = 3, .doc = 0, .doc_line = 7, .indent = 0, .excerpt = "b" },
+        .{ .line = 6, .count = 1, .doc = 0, .doc_line = 18, .indent = 4, .excerpt = "c" },
+    };
+    try t.expectEqual(0, findRun(&runs, 1).?);
+    try t.expectEqual(1, findRun(&runs, 2).?);
+    try t.expectEqual(1, findRun(&runs, 4).?);
+    try t.expectEqual(2, findRun(&runs, 6).?);
+    try t.expect(findRun(&runs, 5) == null);
+    try t.expect(findRun(&runs, 7) == null);
+    try t.expect(findRun(&runs, 0) == null);
+}
+----
+
+=== Writing files
+
+`output.zig` is where Litmus touches the user's files, so it is where care matters most. Three rules of the spec are about this:
+
+T4, write only what changed::
+A build tool or a file watcher should see a change only when there is one. A file whose text is already right is not touched, not even to renew its time. A file that is written is written whole, under a temporary name, and then renamed over the old one. Nobody ever reads half a file.
+
+T5, never delete::
+A file that the last map lists, but that no document tangles now, is reported and left alone. Deleting would be right most of the time, and the wrong time would cost somebody's work.
+
+T6, never overwrite a change tangle did not make::
+Before it writes a file that exists, tangle compares the file with the hash the last map recorded. If they differ, someone edited the file since, and the edit is not in the documents yet. Tangle reports it and writes nothing at all, not even the other files, so the state of the files and the map stays consistent. A file that the map does not list is treated the same way, unless its text already equals what tangle would write. This also covers a fresh clone, where the map does not exist yet. `--force` skips the check.
+
+The function that does it all takes an open directory, so the tests can use a temporary one.
+
+The file holds the writing functions and their tests.
+
+… :file: output.zig
+[source,zig]
+----
+… header
+
+… map_path
+
+… readOrNull
+
+… permissions
+
+… writeAtomic
+
+… write
+
+… test helpers
+
+… T4 tests
+
+… T6 tests
+
+… other tests
+----
+
+… header :file: output.zig
+[source,zig]
+----
+//! Writes tangled files and the map: only what changed, each whole and atomically
+//! (T4), never over a change tangle did not make (T6), never deleting (T5).
+
+const std = @import("std");
+const map = @import("map.zig");
+const tangle = @import("tangle.zig");
+
+const Allocator = std.mem.Allocator;
+const Io = std.Io;
+const Dir = Io.Dir;
+const File = Io.File;
+----
+
+`Outcome` tells the caller what happened, for it to print: conflicts (T6), orphans (T5), the files that were written, and a map that could not be read. The caller prints these. This file does not print anything.
+
+… map_path :file: output.zig
+[source,zig]
+----
+pub const map_path = ".litmus/map";
+
+pub const Outcome = struct {
+    /// Files changed since tangle wrote them (T6). If there are any, nothing was written.
+    conflicts: []const []const u8 = &.{},
+    /// Files the previous map lists that are no longer tangled (T5).
+    orphans: []const []const u8 = &.{},
+    /// Files written or changed.
+    written: []const []const u8 = &.{},
+    /// The existing map could not be read, so nothing was written.
+    bad_map: ?[]const u8 = null,
+};
+----
+
+A missing file is not an error here: it is `null`. Any other failure, such as a directory where a file should be, stops the run.
+
+… readOrNull :file: output.zig
+[source,zig]
+----
+pub fn readOrNull(io: Io, arena: Allocator, dir: Dir, path: []const u8) !?[]const u8 {
+    return dir.readFileAlloc(io, path, arena, .limited(1 << 30)) catch |err| switch (err) {
+        error.FileNotFound => null,
+        else => err,
+    };
+}
+----
+
+An executable file (L9) has to be written so that it can run. A file that already has the right text but the wrong permission should only have its permission changed, so these two functions read and compute the permission bits. `isExecutable` looks at the owner's execute bit. `withExecutable` sets or clears all three, giving an execute bit wherever there is a read bit, as `chmod +x` does. On systems with no such bit, which is Windows, they do nothing.
+
+… permissions :file: output.zig
+[source,zig]
+----
+pub fn isExecutable(permissions: File.Permissions) bool {
+    if (comptime !File.Permissions.has_executable_bit) return false;
+    return permissions.toMode() & 0o100 != 0;
+}
+
+fn withExecutable(permissions: File.Permissions, executable: bool) File.Permissions {
+    if (comptime !File.Permissions.has_executable_bit) return permissions;
+    var mode = permissions.toMode();
+    // An executable bit wherever there is a read bit, as `chmod +x` does.
+    const x: @TypeOf(mode) = 0o111;
+    mode = if (executable) mode | ((mode & 0o444) >> 2) else mode & ~x;
+    return File.Permissions.fromMode(mode);
+}
+----
+
+`writeAtomic` writes a file whole, under a temporary name in the same directory, and renames it over the destination. The directories above the file are made if they are missing. The permissions are those the file should have: the system applies the umask to them, as it does for any new file.
+
+… writeAtomic :file: output.zig
+[source,zig]
+----
+pub fn writeAtomic(io: Io, dir: Dir, path: []const u8, bytes: []const u8, executable: bool) !void {
+    var atomic = try dir.createFileAtomic(io, path, .{
+        .permissions = if (executable) .executable_file else .default_file,
+        .make_path = true,
+        .replace = true,
+    });
+    defer atomic.deinit(io);
+    try atomic.file.writeStreamingAll(io, bytes);
+    try atomic.replace(io);
+}
+----
+
+=== Writing
+
+`write` has five steps. It is long, and each step is a rule of the spec.
+
+… write :file: output.zig
+[source,zig]
+----
+/// Writes the tangled files under `dir`, and the map text with them.
+pub fn write(io: Io, arena: Allocator, dir: Dir, files: []const tangle.Tangled, map_text: []const u8, force: bool) !Outcome {
+    // The previous map says what tangle last wrote.
+    … write, read the previous map
+
+    … write, look before writing
+    … write, write the files
+    … write, orphans
+
+    … write, the map
+}
+----
+
+First the previous map, if there is one. A map that cannot be read stops the tangle, with the reason, because without it T6 cannot tell the user's edits from tangle's own files. With `--force` the map is thrown away, as it would be if it were lost.
+
+… write, read the previous map :file: output.zig
+[source,zig]
+----
+const previous_text = try readOrNull(io, arena, dir, map_path);
+var previous: ?map.Map = null;
+if (previous_text) |text| {
+    previous = map.read(arena, text) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        error.UnsupportedMap, error.BadMap => blk: {
+            if (!force) return .{ .bad_map = if (err == error.UnsupportedMap) "is not a version 1 map" else "is damaged" };
+            break :blk null;
+        },
+    };
+}
+----
+
+Then T6. Every existing file is read before any file is written. A file is fine if it equals the text tangle would write, or if its hash is the one the map recorded, which means that nobody changed it. Anything else is a conflict. If there is any, the function returns at once and nothing has been written.
+
+… write, look before writing :file: output.zig
+[source,zig]
+----
+// T6: look at every existing file before writing any.
+const Existing = struct { text: ?[]const u8 };
+const existing = try arena.alloc(Existing, files.len);
+var conflicts: std.ArrayList([]const u8) = .empty;
+for (files, existing) |file, *slot| {
+    slot.text = try readOrNull(io, arena, dir, file.path);
+    const text = slot.text orelse continue;
+    if (std.mem.eql(u8, text, file.text) or force) continue;
+    const recorded = if (previous) |p| p.find(file.path) else null;
+    if (recorded == null or !std.mem.eql(u8, recorded.?.hash, &map.hashHex(text))) {
+        try conflicts.append(arena, file.path);
+    }
+}
+if (conflicts.items.len > 0) return .{ .conflicts = conflicts.items };
+
+----
+
+Then T4 and L9. A file that has the right text is left alone, except for its executable bit, which is set if it is wrong. Every other file is written whole.
+
+… write, write the files :file: output.zig
+[source,zig]
+----
+// T4, L9
+var written: std.ArrayList([]const u8) = .empty;
+for (files, existing) |file, slot| {
+    if (slot.text) |text| {
+        if (std.mem.eql(u8, text, file.text)) {
+            const stat = try dir.statFile(io, file.path, .{});
+            if (isExecutable(stat.permissions) != file.executable) {
+                try dir.setFilePermissions(io, file.path, withExecutable(stat.permissions, file.executable), .{});
+                try written.append(arena, file.path);
+            }
+            continue;
+        }
+    }
+    try writeAtomic(io, dir, file.path, file.text, file.executable);
+    try written.append(arena, file.path);
+}
+
+----
+
+Then T5: any file in the previous map that is not in this tangle is an orphan.
+
+… write, orphans :file: output.zig
+[source,zig]
+----
+// T5
+var orphans: std.ArrayList([]const u8) = .empty;
+if (previous) |p| {
+    for (p.files) |old| {
+        for (files) |file| {
+            if (std.mem.eql(u8, file.path, old.path)) break;
+        } else try orphans.append(arena, old.path);
+    }
+}
+----
+
+Finally the map itself, which follows the same rule as the files: it is written only if it changed.
+
+… write, the map :file: output.zig
+[source,zig]
+----
+if (previous_text == null or !std.mem.eql(u8, previous_text.?, map_text)) {
+    try writeAtomic(io, dir, map_path, map_text, false);
+}
+return .{ .orphans = orphans.items, .written = written.items };
+----
+
+=== Tests
+
+The tests use a temporary directory and small files made in the test. Setting up a state is just a call to `write`, and the tests change files by hand, as a user would.
+
+… test helpers :file: output.zig
+[source,zig]
+----
+// Tests ----------------------------------------------------------------------
+
+const t = std.testing;
+
+fn tfile(path: []const u8, text: []const u8, executable: bool) tangle.Tangled {
+    return .{ .path = path, .executable = executable, .text = text, .runs = &.{} };
+}
+
+fn mapOf(a: Allocator, files: []const tangle.Tangled) ![]const u8 {
+    return map.render(a, &.{}, files);
+}
+
+fn expectContents(dir: Dir, path: []const u8, want: []const u8) !void {
+    var buffer: [256]u8 = undefined;
+    const got = try dir.readFile(t.io, path, &buffer);
+    try t.expectEqualStrings(want, got);
+}
+----
+
+T4: a second tangle of unchanged documents writes nothing, which the test checks by the modification times of the files and the map; a change to one file writes only that file.
+
+… T4 tests :file: output.zig
+[source,zig]
+----
+test "T4: a second tangle of unchanged documents writes nothing" {
+    var tmp = t.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena_state = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const files = [_]tangle.Tangled{ tfile("a.txt", "one\n", false), tfile("sub/dir/b.txt", "two\n", false) };
+    const text = try mapOf(a, &files);
+    const first = try write(t.io, a, tmp.dir, &files, text, false);
+    try t.expectEqual(2, first.written.len);
+    try expectContents(tmp.dir, "sub/dir/b.txt", "two\n");
+    try expectContents(tmp.dir, map_path, text);
+
+    const before = [_]Io.Timestamp{
+        (try tmp.dir.statFile(t.io, "a.txt", .{})).mtime,
+        (try tmp.dir.statFile(t.io, "sub/dir/b.txt", .{})).mtime,
+        (try tmp.dir.statFile(t.io, map_path, .{})).mtime,
+    };
+    const second = try write(t.io, a, tmp.dir, &files, text, false);
+    try t.expectEqual(0, second.written.len);
+    try t.expectEqual(0, second.conflicts.len);
+    const after = [_]Io.Timestamp{
+        (try tmp.dir.statFile(t.io, "a.txt", .{})).mtime,
+        (try tmp.dir.statFile(t.io, "sub/dir/b.txt", .{})).mtime,
+        (try tmp.dir.statFile(t.io, map_path, .{})).mtime,
+    };
+    for (before, after) |b, f| try t.expectEqual(b.nanoseconds, f.nanoseconds);
+}
+
+test "T4: only the file that changed is written" {
+    var tmp = t.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena_state = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const v1 = [_]tangle.Tangled{ tfile("a.txt", "one\n", false), tfile("b.txt", "two\n", false) };
+    _ = try write(t.io, a, tmp.dir, &v1, try mapOf(a, &v1), false);
+    const v2 = [_]tangle.Tangled{ tfile("a.txt", "one\n", false), tfile("b.txt", "three\n", false) };
+    const out = try write(t.io, a, tmp.dir, &v2, try mapOf(a, &v2), false);
+    try t.expectEqual(1, out.written.len);
+    try t.expectEqualStrings("b.txt", out.written[0]);
+    try expectContents(tmp.dir, "b.txt", "three\n");
+}
+----
+
+T6: an edited file stops the tangle, and nothing is written, not even the other files. With `--force` the same tangle overwrites it. An edit that makes a file equal to its tangled text is not a conflict. Without a map, a file equal to its tangled text is accepted, and a different one stops the tangle.
+
+… T6 tests :file: output.zig
+[source,zig]
+----
+test "T6: an edited file stops the tangle, and nothing at all is written" {
+    var tmp = t.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena_state = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const v1 = [_]tangle.Tangled{ tfile("a.txt", "one\n", false), tfile("b.txt", "two\n", false) };
+    _ = try write(t.io, a, tmp.dir, &v1, try mapOf(a, &v1), false);
+    try tmp.dir.writeFile(t.io, .{ .sub_path = "a.txt", .data = "edited\n" });
+
+    const v2 = [_]tangle.Tangled{ tfile("a.txt", "one more\n", false), tfile("b.txt", "changed\n", false) };
+    const out = try write(t.io, a, tmp.dir, &v2, try mapOf(a, &v2), false);
+    try t.expectEqual(1, out.conflicts.len);
+    try t.expectEqualStrings("a.txt", out.conflicts[0]);
+    try expectContents(tmp.dir, "a.txt", "edited\n");
+    try expectContents(tmp.dir, "b.txt", "two\n");
+
+    // With --force, the same tangle overwrites it.
+    const forced = try write(t.io, a, tmp.dir, &v2, try mapOf(a, &v2), true);
+    try t.expectEqual(0, forced.conflicts.len);
+    try expectContents(tmp.dir, "a.txt", "one more\n");
+    try expectContents(tmp.dir, "b.txt", "changed\n");
+}
+
+test "T6: an edit that makes a file equal to its tangled text is no conflict" {
+    var tmp = t.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena_state = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const v1 = [_]tangle.Tangled{tfile("a.txt", "one\n", false)};
+    _ = try write(t.io, a, tmp.dir, &v1, try mapOf(a, &v1), false);
+    try tmp.dir.writeFile(t.io, .{ .sub_path = "a.txt", .data = "two\n" });
+    // The writer carried the edit into the documents.
+    const v2 = [_]tangle.Tangled{tfile("a.txt", "two\n", false)};
+    const out = try write(t.io, a, tmp.dir, &v2, try mapOf(a, &v2), false);
+    try t.expectEqual(0, out.conflicts.len);
+    try t.expectEqual(0, out.written.len);
+}
+
+test "T6: with no map, files equal to their tangled text are accepted and others stop the tangle" {
+    var tmp = t.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena_state = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    try tmp.dir.writeFile(t.io, .{ .sub_path = "same.txt", .data = "same\n" });
+    try tmp.dir.writeFile(t.io, .{ .sub_path = "other.txt", .data = "mine\n" });
+    const ok = [_]tangle.Tangled{tfile("same.txt", "same\n", false)};
+    const first = try write(t.io, a, tmp.dir, &ok, try mapOf(a, &ok), false);
+    try t.expectEqual(0, first.conflicts.len);
+    try expectContents(tmp.dir, map_path, try mapOf(a, &ok));
+
+    try tmp.dir.deleteFile(t.io, map_path);
+    const bad = [_]tangle.Tangled{ tfile("same.txt", "same\n", false), tfile("other.txt", "tangled\n", false) };
+    const out = try write(t.io, a, tmp.dir, &bad, try mapOf(a, &bad), false);
+    try t.expectEqual(1, out.conflicts.len);
+    try t.expectEqualStrings("other.txt", out.conflicts[0]);
+    try expectContents(tmp.dir, "other.txt", "mine\n");
+    if (tmp.dir.statFile(t.io, map_path, .{})) |_| return error.MapWritten else |_| {}
+}
+----
+
+T5: a file no longer tangled is reported and stays. L9: executable files are written executable, and a change of permission alone changes only the permission. A map of another version stops the tangle unless it is forced.
+
+… other tests :file: output.zig
+[source,zig]
+----
+test "T5: a file no longer tangled is reported and left in place" {
+    var tmp = t.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena_state = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const v1 = [_]tangle.Tangled{ tfile("a.txt", "one\n", false), tfile("gone.txt", "bye\n", false) };
+    _ = try write(t.io, a, tmp.dir, &v1, try mapOf(a, &v1), false);
+    const v2 = [_]tangle.Tangled{tfile("a.txt", "one\n", false)};
+    const out = try write(t.io, a, tmp.dir, &v2, try mapOf(a, &v2), false);
+    try t.expectEqual(1, out.orphans.len);
+    try t.expectEqualStrings("gone.txt", out.orphans[0]);
+    try expectContents(tmp.dir, "gone.txt", "bye\n");
+}
+
+test "L9: executable files are written executable, and a change of permission alone changes only that" {
+    if (comptime !File.Permissions.has_executable_bit) return error.SkipZigTest;
+    var tmp = t.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena_state = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const v1 = [_]tangle.Tangled{ tfile("run.sh", "echo\n", true), tfile("plain.txt", "x\n", false) };
+    _ = try write(t.io, a, tmp.dir, &v1, try mapOf(a, &v1), false);
+    try t.expect(isExecutable((try tmp.dir.statFile(t.io, "run.sh", .{})).permissions));
+    try t.expect(!isExecutable((try tmp.dir.statFile(t.io, "plain.txt", .{})).permissions));
+
+    const v2 = [_]tangle.Tangled{ tfile("run.sh", "echo\n", false), tfile("plain.txt", "x\n", true) };
+    const mtime = (try tmp.dir.statFile(t.io, "run.sh", .{})).mtime;
+    const out = try write(t.io, a, tmp.dir, &v2, try mapOf(a, &v2), false);
+    try t.expectEqual(2, out.written.len);
+    try t.expect(!isExecutable((try tmp.dir.statFile(t.io, "run.sh", .{})).permissions));
+    try t.expect(isExecutable((try tmp.dir.statFile(t.io, "plain.txt", .{})).permissions));
+    try t.expectEqual(mtime.nanoseconds, (try tmp.dir.statFile(t.io, "run.sh", .{})).mtime.nanoseconds);
+}
+
+test "a map of another version stops the tangle unless forced" {
+    var tmp = t.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena_state = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    try tmp.dir.createDirPath(t.io, ".litmus");
+    try tmp.dir.writeFile(t.io, .{ .sub_path = map_path, .data = "litmus map 9\n" });
+    const files = [_]tangle.Tangled{tfile("a.txt", "one\n", false)};
+    const out = try write(t.io, a, tmp.dir, &files, try mapOf(a, &files), false);
+    try t.expect(out.bad_map != null);
+    const forced = try write(t.io, a, tmp.dir, &files, try mapOf(a, &files), true);
+    try t.expect(forced.bad_map == null);
+    try expectContents(tmp.dir, "a.txt", "one\n");
+}
+----

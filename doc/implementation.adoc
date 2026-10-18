@@ -1,0 +1,27 @@
+= Litmus, Implemented
+:toc: left
+:toclevels: 2
+:sectanchors:
+:source-highlighter: rouge
+
+Litmus turns documents into source code, and records where each line came from. This book is Litmus's own source: the documents you are reading tangle into the program, its tests, its build and its test runner. Read it from the top and you meet the program in the order in which it works.
+
+For what Litmus does and why, read the spec first, `litmus.adoc`. This book is about how.
+
+include::implementation/01-overview.adoc[]
+
+include::implementation/02-scanning.adoc[]
+
+include::implementation/03-parsing.adoc[]
+
+include::implementation/04-docset.adoc[]
+
+include::implementation/05-resolving.adoc[]
+
+include::implementation/06-tangling.adoc[]
+
+include::implementation/07-map-and-output.adoc[]
+
+include::implementation/08-commands.adoc[]
+
+include::implementation/09-building-and-testing.adoc[]

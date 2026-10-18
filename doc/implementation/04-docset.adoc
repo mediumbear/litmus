@@ -1,0 +1,339 @@
+== The Document Set
+
+:litmus-dir: src
+
+Litmus is given a few documents on the command line, and each one may include others with `include::` (L6). Together they are the _document set_. This chapter reads them and puts their blocks in reading order.
+
+Reading order is where an include sits. If a chapter has two blocks, then an `include::`, then a third block, the included document's blocks come between the second and the third. Excerpts and file roots are joined in this order, so it decides the order of lines in the output.
+
+The loader is separate from the disk. It is given something with a `read` function, and the tests give it a few strings. The real program gives it the file system.
+
+One file holds the loader and the two small functions that deal with paths.
+
+… :file: docset.zig
+[source,zig]
+----
+… header
+
+… Set
+
+… formatOf
+
+… joinPath
+
+… Loader
+
+… load
+
+… test helpers
+
+… tests
+----
+
+… header :file: docset.zig
+[source,zig]
+----
+//! Reads the documents named on the command line and follows `include::` (L6),
+//! giving the document set and its blocks in reading order. The reading itself is
+//! left to a `fs` value, so the tests need no files.
+
+const std = @import("std");
+const scan = @import("scan.zig");
+const parse = @import("parse.zig");
+const types = @import("types.zig");
+
+const Allocator = std.mem.Allocator;
+const Document = types.Document;
+const Block = types.Block;
+const Diagnostics = types.Diagnostics;
+----
+
+The result is the list of documents, in the order they were first read, and the list of all labeled blocks, in reading order. The block list is already merged across documents, so the next stages never look at a document's include structure again.
+
+… Set :file: docset.zig
+[source,zig]
+----
+pub const Set = struct {
+    /// In the order they were first read: a document, then what it includes.
+    docs: []const Document,
+    /// Every labeled block of the set in reading order: a block of an including
+    /// document that comes after an include follows the included document's blocks.
+    blocks: []const Block,
+};
+----
+
+A document's format comes from its extension. The program checks this for the documents on the command line before it does any work, since an unknown extension there is a usage error. For an include it is C10.
+
+… formatOf :file: docset.zig
+[source,zig]
+----
+/// `.adoc`, `.asciidoc` and `.asc` are asciidoc, and `.md` is Markdown.
+pub fn formatOf(path: []const u8) ?types.Format {
+    const ext = std.fs.path.extension(path);
+    if (std.mem.eql(u8, ext, ".adoc") or std.mem.eql(u8, ext, ".asciidoc") or std.mem.eql(u8, ext, ".asc")) return .asciidoc;
+    if (std.mem.eql(u8, ext, ".md")) return .markdown;
+    return null;
+}
+----
+
+An included path is relative to the document that includes it (L6). `joinPath` puts a directory and a path together and resolves `.` and `..` parts as text. It never looks at the disk, so the same path always gets the same name, and the check for a document that appears twice (C10) can compare names.
+
+… joinPath :file: docset.zig
+[source,zig]
+----
+/// Joins `rel` to the directory `dir` and removes `.` and `..` parts.
+pub fn joinPath(arena: Allocator, dir: []const u8, rel: []const u8) ![]const u8 {
+    var parts: std.ArrayList([]const u8) = .empty;
+    inline for (.{ dir, rel }) |path| {
+        var it = std.mem.splitScalar(u8, path, '/');
+        while (it.next()) |part| {
+            if (part.len == 0 or std.mem.eql(u8, part, ".")) continue;
+            if (std.mem.eql(u8, part, "..") and parts.items.len > 0 and !std.mem.eql(u8, parts.items[parts.items.len - 1], "..")) {
+                _ = parts.pop();
+            } else {
+                try parts.append(arena, part);
+            }
+        }
+    }
+    return std.mem.join(arena, "/", parts.items);
+}
+
+fn dirOf(path: []const u8) []const u8 {
+    return std.fs.path.dirname(path) orelse "";
+}
+----
+
+=== Visiting a document
+
+`Loader` does the work: it visits one document, reads and parses it, and then visits its includes where they stand. The set of paths seen so far says whether a document is already in the set, and whether it is still being read, which makes it an include of itself.
+
+… Loader :file: docset.zig
+[source,zig]
+----
+const Loader = struct {
+    arena: Allocator,
+    fs: *anyopaque,
+    read: *const fn (fs: *anyopaque, arena: Allocator, path: []const u8) ?[]const u8,
+    diags: *Diagnostics,
+    docs: std.ArrayList(Document) = .empty,
+    blocks: std.ArrayList(Block) = .empty,
+    /// The documents of the set by path, with whether they are still being read.
+    seen: std.StringHashMapUnmanaged(Seen) = .empty,
+
+    const Seen = struct { doc: u32, reading: bool };
+    const From = struct { doc: u32, line: u32 };
+
+    fn visit(self: *Loader, path: []const u8, from: ?From) !void {
+        … visit, a document seen before
+        … visit, register the document
+        … visit, a document that cannot be read
+        … visit, merge blocks and includes
+    }
+};
+----
+
+First, a document that is already in the set. If it is still being read, something it includes includes it again: a cycle. Otherwise it is simply there twice. Both are C10, reported at the include that went back, or at the document if it was named on the command line.
+
+… visit, a document seen before :file: docset.zig
+[source,zig]
+----
+if (self.seen.get(path)) |seen| {
+    const at: From = from orelse .{ .doc = seen.doc, .line = 0 };
+    if (seen.reading) {
+        try self.diags.add(at.doc, at.line, "C10: {s} includes itself", .{path});
+    } else {
+        try self.diags.add(at.doc, at.line, "C10: {s} is in the document set twice", .{path});
+    }
+    return;
+}
+----
+
+A new document gets the next number and is entered in the set before it is parsed, so that its includes can refer back to it. The text is read through the loader's `read`, and cut into lines. A document with an unknown extension is not even read.
+
+… visit, register the document :file: docset.zig
+[source,zig]
+----
+const index: u32 = @intCast(self.docs.items.len);
+const format = formatOf(path);
+const text = if (format != null) self.read(self.fs, self.arena, path) else null;
+const lines = if (text) |bytes| try scan.splitLines(self.arena, bytes) else &[0][]const u8{};
+try self.docs.append(self.arena, .{ .path = path, .format = format orelse .asciidoc, .lines = lines, .dir = dirOf(path) });
+try self.seen.put(self.arena, path, .{ .doc = index, .reading = true });
+defer self.seen.getPtr(path).?.reading = false;
+----
+
+A document that cannot be read still has its place in the list, with no lines, so that diagnostics can name it. The message is C10, put where the user can find it: at the include line if there was one, and at the document itself if it came from the command line.
+
+… visit, a document that cannot be read :file: docset.zig
+[source,zig]
+----
+if (text == null) {
+    const at: From = from orelse .{ .doc = index, .line = 0 };
+    if (format == null) {
+        try self.diags.add(at.doc, at.line, "C10: {s} is not a .adoc, .asciidoc, .asc or .md document", .{path});
+    } else {
+        try self.diags.add(at.doc, at.line, "C10: cannot read {s}", .{path});
+    }
+    return;
+}
+----
+
+Finally the document is parsed, and its blocks and its includes are merged by line number. Blocks and includes are each in order, so this is one pass: whichever comes first in the document goes first. An include is followed at once, depth first, which is what puts the included blocks at the right place.
+
+… visit, merge blocks and includes :file: docset.zig
+[source,zig]
+----
+const parsed = try parse.parse(self.arena, index, self.docs.items[index], self.diags);
+var b: usize = 0;
+var i: usize = 0;
+while (b < parsed.blocks.len or i < parsed.includes.len) {
+    if (i == parsed.includes.len or (b < parsed.blocks.len and parsed.blocks[b].first_line < parsed.includes[i].line)) {
+        try self.blocks.append(self.arena, parsed.blocks[b]);
+        b += 1;
+    } else {
+        const include = parsed.includes[i];
+        i += 1;
+        const child = try joinPath(self.arena, self.docs.items[index].dir, include.path);
+        try self.visit(child, .{ .doc = index, .line = include.line });
+    }
+}
+----
+
+`load` is the entry point. The documents named on the command line are visited in order. The loader needs to call the caller's `read` without knowing its type, so `load` makes a small function that casts back to it.
+
+… load :file: docset.zig
+[source,zig]
+----
+/// Loads the document set. `fs.read(arena, path)` gives a file's text or null.
+pub fn load(arena: Allocator, fs: anytype, paths: []const []const u8, diags: *Diagnostics) !Set {
+    const Fs = @typeInfo(@TypeOf(fs)).pointer.child;
+    const Thunk = struct {
+        fn read(ptr: *anyopaque, a: Allocator, path: []const u8) ?[]const u8 {
+            const real: *Fs = @ptrCast(@alignCast(ptr));
+            return real.read(a, path);
+        }
+    };
+    var loader: Loader = .{ .arena = arena, .fs = fs, .read = Thunk.read, .diags = diags };
+    for (paths) |path| try loader.visit(try joinPath(arena, "", path), null);
+    return .{ .docs = loader.docs.items, .blocks = loader.blocks.items };
+}
+----
+
+=== Tests
+
+The tests use a few documents held in memory. They check the reading order (L6) and the three ways C10 can happen: a document that includes itself, one that is in the set twice, and one that is missing or of a kind that is not read.
+
+… test helpers :file: docset.zig
+[source,zig]
+----
+// Tests ----------------------------------------------------------------------
+
+const t = std.testing;
+
+const MemoryFs = struct {
+    files: []const [2][]const u8,
+
+    fn read(self: *MemoryFs, _: Allocator, path: []const u8) ?[]const u8 {
+        for (self.files) |file| if (std.mem.eql(u8, file[0], path)) return file[1];
+        return null;
+    }
+};
+
+fn expectDiag(diags: Diagnostics, doc: u32, line: u32, needle: []const u8) !void {
+    for (diags.list.items) |d| {
+        if (d.doc == doc and d.line == line and std.mem.indexOf(u8, d.message, needle) != null) return;
+    }
+    for (diags.list.items) |d| std.debug.print("  {d}:{d}: {s}\n", .{ d.doc, d.line, d.message });
+    return error.MissingDiagnostic;
+}
+----
+
+… tests :file: docset.zig
+[source,zig]
+----
+test "L6: includes are followed at their position, depth first, relative to the includer" {
+    var arena_state = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var fs: MemoryFs = .{ .files = &.{
+        .{ "book/main.adoc", "… :file: m1\n----\n----\ninclude::part/one.adoc[]\n… :file: m2\n----\n----\ninclude::two.adoc[]\n" },
+        .{ "book/part/one.adoc", "… :file: o1\n----\n----\ninclude::../three.adoc[]\n… :file: o2\n----\n----\n" },
+        .{ "book/two.adoc", "… :file: t1\n----\n----\n" },
+        .{ "book/three.adoc", "… :file: h1\n----\n----\n" },
+        .{ "other.md", "… :file: x1\n```\n```\n" },
+    } };
+    var diags = Diagnostics.init(a);
+    const set = try load(a, &fs, &.{ "book/main.adoc", "./other.md" }, &diags);
+    try t.expectEqual(0, diags.list.items.len);
+    const want = [_][]const u8{ "m1", "o1", "h1", "o2", "m2", "t1", "x1" };
+    try t.expectEqual(want.len, set.blocks.len);
+    for (want, set.blocks) |w, block| try t.expectEqualStrings(w, block.label.file);
+    const docs = [_][]const u8{ "book/main.adoc", "book/part/one.adoc", "book/three.adoc", "book/two.adoc", "other.md" };
+    try t.expectEqual(docs.len, set.docs.len);
+    for (docs, set.docs) |w, doc| try t.expectEqualStrings(w, doc.path);
+    try t.expectEqual(types.Format.markdown, set.docs[4].format);
+    try t.expectEqual(2, set.blocks[2].label.doc);
+}
+
+test "C10: a document that includes itself, directly or through others" {
+    var arena_state = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var fs: MemoryFs = .{ .files = &.{
+        .{ "a.adoc", "include::a.adoc[]\n" },
+        .{ "b.adoc", "x\ninclude::c.adoc[]\n" },
+        .{ "c.adoc", "include::b.adoc[]\n" },
+    } };
+    var diags = Diagnostics.init(a);
+    _ = try load(a, &fs, &.{ "a.adoc", "b.adoc" }, &diags);
+    try expectDiag(diags, 0, 1, "includes itself");
+    try expectDiag(diags, 2, 1, "includes itself");
+    try t.expectEqual(2, diags.list.items.len);
+}
+
+test "C10: a document in the set twice" {
+    var arena_state = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var fs: MemoryFs = .{ .files = &.{
+        .{ "a.adoc", "include::sub/b.adoc[]\ninclude::sub/../sub/b.adoc[]\n" },
+        .{ "sub/b.adoc", "" },
+    } };
+    var diags = Diagnostics.init(a);
+    _ = try load(a, &fs, &.{ "a.adoc", "sub/b.adoc", "a.adoc" }, &diags);
+    try expectDiag(diags, 0, 2, "twice");
+    try expectDiag(diags, 1, 0, "twice");
+    try expectDiag(diags, 0, 0, "twice");
+    try t.expectEqual(3, diags.list.items.len);
+}
+
+test "C10: a missing document, and a document of an unknown kind" {
+    var arena_state = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var fs: MemoryFs = .{ .files = &.{
+        .{ "a.adoc", "include::gone.adoc[]\ninclude::notes.txt[]\n" },
+        .{ "notes.txt", "" },
+    } };
+    var diags = Diagnostics.init(a);
+    const set = try load(a, &fs, &.{ "a.adoc", "missing.md" }, &diags);
+    try expectDiag(diags, 0, 1, "cannot read gone.adoc");
+    try expectDiag(diags, 0, 2, "notes.txt is not");
+    try expectDiag(diags, 3, 0, "cannot read missing.md");
+    try t.expectEqual(4, set.docs.len);
+}
+
+test "formatOf and joinPath" {
+    try t.expectEqual(types.Format.asciidoc, formatOf("a/b.asciidoc").?);
+    try t.expectEqual(types.Format.asciidoc, formatOf("b.asc").?);
+    try t.expectEqual(types.Format.markdown, formatOf("b.md").?);
+    try t.expect(formatOf("b.txt") == null);
+    try t.expect(formatOf("adoc") == null);
+    var arena_state = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    try t.expectEqualStrings("a/c.adoc", try joinPath(a, "a/b", "../c.adoc"));
+    try t.expectEqualStrings("../x", try joinPath(a, "", "../x"));
+    try t.expectEqualStrings("x", try joinPath(a, "", "./x"));
+}
+----

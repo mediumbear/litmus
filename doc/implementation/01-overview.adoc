@@ -1,0 +1,205 @@
+== Overview and the Main Types
+
+:litmus-dir: src
+
+This book is the source of Litmus. Tangle it and you get the program; build the program and it tangles this book again, to the same bytes. The chapters follow the journey of a document through the program, and each chapter holds the files that do one step of that journey.
+
+[[pipeline]]
+Litmus has one pipeline, and every command uses a part of it:
+
+....
+document text
+    scan      (chapter 2)   classify each line: prose, command, block edge, code, ...
+    parse     (chapter 3)   labels, blocks and excerpt commands of one document
+    docset    (chapter 4)   follow include:: and put the documents in reading order
+    resolve   (chapter 5)   group blocks into files and excerpts, and run the checks
+    tangle    (chapter 6)   expand each file and record where its lines came from
+    map, output (chapter 7) write the files and the map, without losing anyone's work
+    commands  (chapter 8)   tangle, check, where, guide and init
+....
+
+The spec, `doc/litmus.adoc`, says what Litmus does. This book says how. Every behaviour traces to a rule of the spec, and the tests in this book name the rule they check: L for the language, T for tangle, C for the checks, M for Markdown and I for init. When the code needs something the spec does not say, the spec changes first.
+
+=== Four decisions that shape the code
+
+Litmus runs on every save, so it has to be fast. It also has to be dependable, since the files it writes are the files a compiler reads. Four decisions follow from that.
+
+Read each document once, and keep the lines as slices of the text::
+A document is read into one buffer and cut into lines, but no line is copied. Blocks, labels and excerpt commands point into the buffer. Nothing is parsed twice.
+
+One arena per run::
+Everything lives until the program ends, so nothing is freed one piece at a time. The program asks the operating system for memory in large steps and never gives it back until it exits. This is simple, and fast.
+
+No regular expressions::
+The syntax is a handful of line shapes. Looking at the first bytes of a line is enough, and it is faster and easier to read than a pattern.
+
+Report everything::
+A writer fixing a document wants the whole list of mistakes, not the first one. Each stage records a diagnostic and goes on. A diagnostic is printed as `document:line: message`, in the order of the document set.
+
+The exit code is 0 for success, 1 for errors or differences, and 2 for wrong usage.
+
+=== The main types
+
+All stages share a few types. They are collected in one file, so that a stage can be read without opening the one before it. All of them are allocated in the run's arena, and the lines they hold are slices into the documents' text.
+
+The file starts with a note on what it holds, and imports the standard library.
+
+… :file: types.zig
+[source,zig]
+----
+… header
+
+… Format
+
+… Document
+
+… Label
+
+… Command
+
+… Block
+
+… Run
+
+… Diagnostic
+
+… Diagnostics
+----
+
+… header :file: types.zig
+[source,zig]
+----
+//! The types that the stages of Litmus pass to each other. Everything is
+//! allocated in the run's arena, and lines are slices into the documents' text.
+
+const std = @import("std");
+----
+
+Documents are either asciidoc or Markdown. The scanner defines the format, and this file lets the other stages use it without importing the scanner.
+
+… Format :file: types.zig
+[source,zig]
+----
+pub const Format = @import("scan.zig").Format;
+----
+
+A `Document` is a path, a format, and the document's lines. Its `dir` is the directory that contains it, which is where `include::` paths start (L6). Not to be confused with `:litmus-dir:`, which sets where tangled files go (L8).
+
+… Document :file: types.zig
+[source,zig]
+----
+pub const Document = struct {
+    /// The path as given on the command line, or as joined by an include (L6).
+    path: []const u8,
+    format: Format,
+    lines: []const []const u8,
+    /// The directory of `path`, without a trailing `/`; empty for the current directory.
+    dir: []const u8,
+};
+----
+
+A `Label` is what a document command says (L1, L9). It records where the label is, so that later errors can point at it. The `file` is the full path of the file the block lands in, with the document's `:litmus-dir:` already in front. A file root has no name.
+
+… Label :file: types.zig
+[source,zig]
+----
+/// What a document command says (L1, L9). Lines count from 1.
+pub const Label = struct {
+    doc: u32,
+    line: u32,
+    /// Null for a file root.
+    name: ?[]const u8,
+    /// The full path, with the document's `:litmus-dir:` in front (L8).
+    file: []const u8,
+    executable: bool,
+};
+----
+
+An excerpt command inside a labeled block (L3) is a `Command`: the index of its line in the block, the bytes before the ellipsis (the indent), and the name of the excerpt it stands for.
+
+… Command :file: types.zig
+[source,zig]
+----
+/// An excerpt command inside a labeled block (L3).
+pub const Command = struct {
+    /// The index of the line in the block.
+    index: u32,
+    indent: []const u8,
+    name: []const u8,
+};
+----
+
+A `Block` is a labeled block of code. It remembers the document line of its first line of code, which is what the map needs, and a slice of the document's lines.
+
+… Block :file: types.zig
+[source,zig]
+----
+pub const Block = struct {
+    label: Label,
+    /// The document line of the block's first line of code.
+    first_line: u32,
+    lines: []const []const u8,
+    commands: []const Command,
+};
+----
+
+A `Run` is the map's unit. While tangle expands a file, it notes each stretch of consecutive output lines that came from consecutive lines of one block, with the same indent. The map is a list of runs, and so is the answer to "where did this line come from".
+
+… Run :file: types.zig
+[source,zig]
+----
+/// A run of consecutive lines of a tangled file that come from consecutive lines of
+/// one block, with the same indent (the map's lines).
+pub const Run = struct {
+    /// The first line in the file.
+    line: u32,
+    count: u32,
+    doc: u32,
+    doc_line: u32,
+    indent: u32,
+    /// The excerpt's name, or `:file:` for the file root.
+    excerpt: []const u8,
+};
+----
+
+A `Diagnostic` is one problem: a document, a line, and a message. A line of 0 means the problem belongs to the document as a whole, such as a document that cannot be read.
+
+… Diagnostic :file: types.zig
+[source,zig]
+----
+pub const Diagnostic = struct {
+    doc: u32,
+    line: u32,
+    message: []const u8,
+};
+----
+
+`Diagnostics` collects them. The messages are formatted into the arena as they are added. Before they are printed they are sorted by document, then by line, so that the report follows the reading order whatever order the stages found the problems in. The sort keeps the order of problems on one line, because Zig's `std.mem.sort` is stable.
+
+… Diagnostics :file: types.zig
+[source,zig]
+----
+pub const Diagnostics = struct {
+    arena: std.mem.Allocator,
+    list: std.ArrayList(Diagnostic) = .empty,
+
+    pub fn init(arena: std.mem.Allocator) Diagnostics {
+        return .{ .arena = arena };
+    }
+
+    pub fn add(self: *Diagnostics, doc: u32, line: u32, comptime fmt: []const u8, args: anytype) !void {
+        const message = try std.fmt.allocPrint(self.arena, fmt, args);
+        try self.list.append(self.arena, .{ .doc = doc, .line = line, .message = message });
+    }
+
+    /// Orders the diagnostics by document, then line, keeping the order of equal ones.
+    pub fn sort(self: *Diagnostics) void {
+        std.mem.sort(Diagnostic, self.list.items, {}, less);
+    }
+
+    fn less(_: void, a: Diagnostic, b: Diagnostic) bool {
+        if (a.doc != b.doc) return a.doc < b.doc;
+        return a.line < b.line;
+    }
+};
+----

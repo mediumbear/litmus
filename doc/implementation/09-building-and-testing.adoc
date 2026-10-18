@@ -1,0 +1,471 @@
+== Building and Testing
+
+The last chapter holds what builds Litmus and tests it. These files are not in `src/`, so this chapter sets no directory, and every label gives the whole path.
+
+There are three kinds of test:
+
+Unit tests::
+Zig tests in the source files, next to the code they check. `zig build test` runs them. Each names the rule of the spec that it checks.
+
+Golden tests::
+Small documents in `test/cases`, with the files and messages that tangling them must give. `zig build cases` tangles each one, checks the result, changes a byte to see that `check` finds it, and asks `where` about every run. They cover every rule and every check of the spec, and init. They are plain files, not part of this book, since they are data and not code to explain.
+
+The self test::
+`zig build self` is the proof that this book is Litmus. It tangles the book into an empty directory, builds a Litmus from that directory and runs its tests, and with that Litmus tangles the book again. The files must equal the repository's, byte for byte, both times. The book describes the program that tangles it, and the program tangles the book.
+
+In everyday work, `zig build test` is the check that the book and the files agree. It also runs `litmus check` on the book. A change to the code means the same change in the block that holds it, and `check` says on which line they differ.
+
+=== The build
+
+`build.zig` describes the program and its steps. Litmus needs Zig 0.17 or later, which `scripts/get-zig.sh` installs into `tools/zig`; Zig's standard library changed a great deal for 0.17, so older versions cannot build it.
+
+… :file: build.zig
+[source,zig]
+----
+… header
+
+… build
+----
+
+… header :file: build.zig
+[source,zig]
+----
+const std = @import("std");
+
+comptime {
+    const v = @import("builtin").zig_version;
+    if (v.major == 0 and v.minor < 17) @compileError("Litmus needs Zig 0.17 or later; scripts/get-zig.sh installs it into tools/zig");
+}
+----
+
+`build` makes the program, and a step for each kind of test.
+
+… build :file: build.zig
+[source,zig]
+----
+pub fn build(b: *std.Build) void {
+    const target = b.standardTargetOptions(.{});
+    const optimize = b.standardOptimizeOption(.{});
+
+    … build, the program
+
+    … build, unit tests
+
+    … build, the book
+
+    … build, golden and self tests
+}
+----
+
+`zig build` makes `zig-out/bin/litmus`, and `zig build run -- ARGUMENTS` runs it.
+
+… build, the program :file: build.zig
+[source,zig]
+----
+const litmus = b.createModule(.{
+    .root_source_file = b.path("src/main.zig"),
+    .target = target,
+    .optimize = optimize,
+});
+const exe = b.addExecutable(.{ .name = "litmus", .root_module = litmus });
+b.installArtifact(exe);
+
+const run_cmd = b.addRunArtifact(exe);
+run_cmd.step.dependOn(b.getInstallStep());
+run_cmd.addPassthruArgs();
+b.step("run", "Run litmus").dependOn(&run_cmd.step);
+----
+
+The unit tests are compiled from `src/tests.zig`, which imports every source file.
+
+… build, unit tests :file: build.zig
+[source,zig]
+----
+const test_module = b.createModule(.{
+    .root_source_file = b.path("src/tests.zig"),
+    .target = target,
+    .optimize = optimize,
+});
+const tests = b.addTest(.{ .root_module = test_module });
+const test_step = b.step("test", "Run the unit tests, and check that the book still tangles to the sources");
+test_step.dependOn(&b.addRunArtifact(tests).step);
+----
+
+If the book exists, `zig build test` also runs `litmus check` on it, from the project's root. The check is skipped when the book is not there. That is the case in the directory the self test builds in, which holds only the sources tangled from the book. Since the check reads files that the build does not know about, it is marked to run every time.
+
+… build, the book :file: build.zig
+[source,zig]
+----
+// The book, where there is one, must tangle to the files that are here. The
+// sources tangled from it into a temporary directory do not have it.
+const book = "doc/implementation.adoc";
+if (std.Io.Dir.cwd().access(b.graph.io, book, .{})) |_| {
+    const check_book = b.addRunArtifact(exe);
+    check_book.addArgs(&.{ "check", "-o", ".", book });
+    check_book.setCwd(b.path("."));
+    // It reads files that the build does not know about, so it must always run.
+    check_book.has_side_effects = true;
+    test_step.dependOn(&check_book.step);
+} else |_| {}
+----
+
+The golden tests and the self test are run by one shell script, which is given the program that was just built.
+
+… build, golden and self tests :file: build.zig
+[source,zig]
+----
+const cases = b.addSystemCommand(&.{ "bash", "test/run.sh", "cases" });
+cases.addArtifactArg(exe);
+b.step("cases", "Run the golden tests").dependOn(&cases.step);
+
+const self = b.addSystemCommand(&.{ "bash", "test/run.sh", "self" });
+self.addArtifactArg(exe);
+b.step("self", "Tangle the book, build Litmus from the result, and tangle again").dependOn(&self.step);
+----
+
+`build.zig.zon` is the package file. With it, a project like Hop can depend on Litmus by its path.
+
+… :file: build.zig.zon
+[source,zig]
+----
+… package
+----
+
+… package :file: build.zig.zon
+[source,zig]
+----
+.{
+    .name = .litmus,
+    .version = "0.1.0",
+    .fingerprint = 0x65c0b933b61f1a4c,
+    .minimum_zig_version = "0.17.0",
+    .dependencies = .{},
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}
+----
+
+`src/tests.zig` is the root of the unit tests. A Zig test only runs if its file is reached, so this file reaches all of them.
+
+… :file: src/tests.zig
+[source,zig]
+----
+… unit tests
+----
+
+… unit tests :file: src/tests.zig
+[source,zig]
+----
+test {
+    _ = @import("main.zig");
+    _ = @import("scan.zig");
+    _ = @import("types.zig");
+    _ = @import("parse.zig");
+    _ = @import("docset.zig");
+    _ = @import("resolve.zig");
+    _ = @import("tangle.zig");
+    _ = @import("map.zig");
+    _ = @import("output.zig");
+    _ = @import("compare.zig");
+    _ = @import("init.zig");
+}
+----
+
+=== The test runner
+
+`test/run.sh` has two modes. `cases` runs the golden tests, and `self` runs the self test. Both are started by `zig build`, which gives the script the program to test.
+
+… :file: test/run.sh :executable:
+[source,bash]
+----
+… setup
+
+… expect_same
+
+… run_init
+
+… tangle_case
+
+… cases
+
+… self
+
+… mode
+----
+
+The script stops on unset variables. Failures are counted and printed, and not fatal, so a run shows every case that is wrong. Each case works in a directory made for it, which is removed at the end.
+
+… setup :file: test/run.sh
+[source,bash]
+----
+#!/usr/bin/env bash
+# The golden tests and the self-hosting test of Litmus.
+#   test/run.sh cases LITMUS   tangles, checks and queries every case in test/cases
+#   test/run.sh self LITMUS    tangles the book, builds Litmus from the result, and tangles again
+set -u
+mode=${1:?usage: test/run.sh cases|self LITMUS}
+litmus=$(cd "$(dirname "${2:?usage: test/run.sh cases|self LITMUS}")" && pwd)/$(basename "$2")
+root=$(cd "$(dirname "$0")/.." && pwd)
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+failures=0
+
+fail() {
+  echo "FAIL $1: $2"
+  failures=$((failures + 1))
+}
+----
+
+Two files or two trees are compared with `diff`. It prints a few lines of the difference, which are enough to see what is wrong.
+
+… expect_same :file: test/run.sh
+[source,bash]
+----
+# expect_same NAME ACTUAL EXPECTED: two files or trees must be equal.
+expect_same() {
+  if ! diff -r -x .DS_Store "$2" "$3" > "$work/diff" 2>&1; then
+    fail "$1" "differs from the expected result"
+    sed 's/^/    /' "$work/diff" | head -20
+  fi
+}
+----
+
+=== Golden cases
+
+A case that has a file `cmd` is an init case. The command is run in a sandbox that holds the files of `before`, with Litmus available under the name the command uses: on the `PATH`, or at a relative path such as `tools/litmus` (I1). The sandbox must then equal `expected`, and the second run has to print nothing and change nothing (I4).
+
+… run_init :file: test/run.sh
+[source,bash]
+----
+# Runs the command of an init case in the sandbox, with Litmus reachable under the
+# name the command uses: on the PATH, or at a relative path such as tools/litmus.
+run_init() {
+  local sandbox=$1 cmd=$2 first=${2%% *}
+  rm -rf "$work/bin" && mkdir -p "$work/bin"
+  if [[ $first == */* ]]; then
+    mkdir -p "$sandbox/$(dirname "$first")"
+    ln -s "$litmus" "$sandbox/$first"
+  else
+    ln -s "$litmus" "$work/bin/$first"
+  fi
+  (cd "$sandbox" && PATH="$work/bin:$PATH" sh -c "$cmd") > "$work/stdout" 2> "$work/stderr"
+  local code=$?
+  if [[ $first == */* ]]; then
+    rm "$sandbox/$first"
+    (cd "$sandbox" && rmdir -p "$(dirname "$first")" 2> /dev/null)
+  fi
+  return $code
+}
+
+# A case with a `cmd` file is an init case. The others are tangle cases.
+init_case() {
+  local dir=$1 name=$2 sandbox=$work/sandbox cmd
+  rm -rf "$sandbox" && mkdir -p "$sandbox"
+  [ -d "$dir/before" ] && cp -R "$dir/before/." "$sandbox/"
+  cmd=$(cat "$dir/cmd")
+  run_init "$sandbox" "$cmd" || fail "$name" "init failed: $(cat "$work/stderr")"
+  expect_same "$name (what init prints)" "$work/stdout" "$( [ -f "$dir/expected.out" ] && echo "$dir/expected.out" || echo /dev/null )"
+  expect_same "$name (the files)" "$sandbox" "$dir/expected"
+  # I4: the second run changes nothing.
+  run_init "$sandbox" "$cmd"
+  [ -s "$work/stdout" ] && fail "$name" "the second init printed: $(cat "$work/stdout")"
+  expect_same "$name (the files after a second run)" "$sandbox" "$dir/expected"
+}
+----
+
+The other cases tangle. Each has a file `args`, the documents and options after `tangle -o OUT`, and may have a `before` directory for the output (to test T5 and T6 on files that exist), an `exit` file for a failing tangle, an `expected` tree, and `expected.err`, what tangle says.
+
+… tangle_case :file: test/run.sh
+[source,bash]
+----
+tangle_case() {
+  local dir=$1 name=$2 out=$work/out args expected want_exit=0 code
+  … case, set up
+  … case, tangle
+  … case, tangle again
+
+  … case, check
+
+  … case, a changed byte
+
+  … case, where
+}
+----
+
+Start with an output directory that holds `before`.
+
+… case, set up :file: test/run.sh
+[source,bash]
+----
+rm -rf "$out" && mkdir -p "$out"
+[ -d "$dir/before" ] && cp -R "$dir/before/." "$out/"
+[ -f "$dir/exit" ] && want_exit=$(cat "$dir/exit")
+args=$(cat "$dir/args")
+----
+
+Tangle, and compare the output with `expected`, which includes the map, and what is said with `expected.err`. A failing tangle must also have written nothing.
+
+… case, tangle :file: test/run.sh
+[source,bash]
+----
+# 1. Tangle, and compare the files, the map and what is said.
+(cd "$dir" && "$litmus" tangle -o "$out" $args) > "$work/stdout" 2> "$work/stderr"
+code=$?
+[ "$code" -eq "$want_exit" ] || fail "$name" "tangle exited $code, not $want_exit"
+expected=$dir/expected
+if [ ! -d "$expected" ]; then
+  mkdir -p "$work/empty" && expected=$work/empty
+fi
+expect_same "$name (the files)" "$out" "$expected"
+expect_same "$name (what tangle says)" "$work/stderr" "$( [ -f "$dir/expected.err" ] && echo "$dir/expected.err" || echo /dev/null )"
+[ "$want_exit" -eq 0 ] || return
+----
+
+Tangling again must write nothing (T4).
+
+… case, tangle again :file: test/run.sh
+[source,bash]
+----
+# T4: the second tangle writes nothing.
+(cd "$dir" && "$litmus" tangle -o "$out" $args) > "$work/stdout" 2> /dev/null
+[ -s "$work/stdout" ] && fail "$name" "the second tangle wrote: $(cat "$work/stdout")"
+----
+
+`check` must pass on the result.
+
+… case, check :file: test/run.sh
+[source,bash]
+----
+# 2. Check the result.
+local documents=${args//--force/}
+(cd "$dir" && "$litmus" check -o "$out" $documents) > /dev/null 2> "$work/stderr" || fail "$name" "check failed: $(cat "$work/stderr")"
+----
+
+Then the first byte of the first file is changed. `check` must now fail, and must name the document line that the map says that line came from.
+
+… case, a changed byte :file: test/run.sh
+[source,bash]
+----
+# 3. Change the first byte of the first file that has any, and check must say where.
+local file origin
+file=$(awk -F'\t' '$1 == "file" { file = $2 } $1 != "file" && file != "" && !seen && FILENAME != "" { print file; seen = 1 }' "$out/.litmus/map")
+if [ -n "$file" ]; then
+  origin=$(awk -F'\t' -v want="$file" '$1 == "file" { on = ($2 == want); next } on && !done { print $3 ":" $4; done = 1 }' "$out/.litmus/map")
+  printf 'X' | dd of="$out/$file" bs=1 count=1 conv=notrunc 2> /dev/null
+  (cd "$dir" && "$litmus" check -o "$out" $documents) > /dev/null 2> "$work/stderr"
+  [ $? -eq 1 ] || fail "$name" "check passed on a changed file"
+  grep -q -F "$origin" "$work/stderr" || fail "$name" "check did not name $origin: $(cat "$work/stderr")"
+fi
+----
+
+Last, `where` is asked for the first and the last line of every run in the map. The answer has to be the run's document line, moved by how far into the run the line is, and the excerpt's name.
+
+… case, where :file: test/run.sh
+[source,bash]
+----
+# 4. Where: the first and last line of every run.
+local file_name=""
+while IFS=$'\t' read -r first second third fourth fifth sixth; do
+  [ "$first" = "litmus map 1" ] && continue
+  if [ "$first" = file ]; then
+    file_name=$second
+    continue
+  fi
+  local excerpt=$sixth
+  [ "$excerpt" = ":file:" ] && excerpt="file root"
+  local last=$((first + second - 1)) doc_last=$((fourth + second - 1))
+  [ "$("$litmus" where -o "$out" "$file_name:$first")" = "$third:$fourth ($excerpt)" ] || fail "$name" "where $file_name:$first"
+  [ "$("$litmus" where -o "$out" "$file_name:$last")" = "$third:$doc_last ($excerpt)" ] || fail "$name" "where $file_name:$last"
+done < "$out/.litmus/map"
+----
+
+`cases` runs every directory of `test/cases`. After the cases it times the tangling of a generated document of 100,000 lines of code, a thousand excerpts of a hundred lines each. The time is printed and not judged, since it depends on the machine and on whether the program is a release build.
+
+… cases :file: test/run.sh
+[source,bash]
+----
+cases() {
+  local dir name count=0
+  for dir in "$root"/test/cases/*/; do
+    dir=${dir%/}
+    name=$(basename "$dir")
+    count=$((count + 1))
+    if [ -f "$dir/cmd" ]; then init_case "$dir" "$name"; else tangle_case "$dir" "$name"; fi
+  done
+  echo "cases: $count run"
+  speed
+}
+
+# Tangling 100,000 lines of code is timed, and the time is reported.
+speed() {
+  local big=$work/big
+  mkdir -p "$big"
+  awk 'BEGIN {
+    print "… :file: big.txt\n----"
+    for (i = 1; i <= 1000; i++) print "… part " i
+    print "----\n"
+    for (i = 1; i <= 1000; i++) {
+      print "… part " i " :file: big.txt\n----"
+      for (j = 1; j <= 100; j++) print "    line " j " of part " i
+      print "----\n"
+    }
+  }' > "$big/big.adoc"
+  local start end
+  start=$(date +%s)
+  (cd "$big" && "$litmus" tangle -o out big.adoc) > /dev/null
+  end=$(date +%s)
+  local lines
+  lines=$(wc -l < "$big/out/big.txt")
+  echo "speed: tangled $lines lines in about $((end - start)) s (whole seconds)"
+  TIMEFORMAT='speed: %R s of wall time for the same tangle, second run'
+  time (cd "$big" && "$litmus" tangle -o out2 big.adoc) > /dev/null
+}
+----
+
+=== The self test
+
+The self test tangles the book into a temporary directory with the Litmus it was given, and compares each file the map lists with the one in the repository. Then it builds a Litmus from the tangled directory with the Zig in `tools/zig`, runs its unit tests, and tangles the book with it into a second directory. The second set of files must equal the repository's too, and the two maps must be equal, which is the fixed point.
+
+… self :file: test/run.sh
+[source,bash]
+----
+# The fixed point: the book tangles to the repository, a Litmus built from that tangles it again.
+self() {
+  local book=doc/implementation.adoc one=$work/one two=$work/two
+  (cd "$root" && "$litmus" tangle -o "$one" "$book") || fail self "the book does not tangle"
+  compare_with_repo self-one "$one"
+  (cd "$one" && "$root/tools/zig/zig" build test && "$root/tools/zig/zig" build) || fail self "the tangled sources do not build and pass their tests"
+  (cd "$root" && "$one/zig-out/bin/litmus" tangle -o "$two" "$book") || fail self "the second Litmus does not tangle the book"
+  compare_with_repo self-two "$two"
+  expect_same "self (the two tangles)" "$one/.litmus" "$two/.litmus"
+}
+
+# Every file in the map of the tangle at $2 must equal the repository's file.
+compare_with_repo() {
+  local path
+  while IFS=$'\t' read -r first path _; do
+    [ "$first" = file ] || continue
+    cmp -s "$2/$path" "$root/$path" || fail "$1" "$path differs from the repository"
+  done < "$2/.litmus/map"
+}
+----
+
+The mode selects what runs. The script's exit code is 1 if any check failed.
+
+… mode :file: test/run.sh
+[source,bash]
+----
+case $mode in
+  cases) cases ;;
+  self) self ;;
+  *) echo "usage: test/run.sh cases|self LITMUS"; exit 2 ;;
+esac
+if [ "$failures" -gt 0 ]; then
+  echo "$failures failures"
+  exit 1
+fi
+echo "$mode: ok"
+----

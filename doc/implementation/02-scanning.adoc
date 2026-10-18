@@ -1,0 +1,616 @@
+== Scanning
+
+:litmus-dir: src
+
+A Litmus document is ordinary asciidoc or Markdown with one addition, the Litmus command. Before anything can be labeled or tangled, every line must be put in one of a few classes: is it prose, a command, the edge of a code block, code, or something Litmus never looks at?
+
+The answer for a line depends on where it is. A line that starts with `…` is a document command in prose, an excerpt command inside a labeled block, and nothing at all inside a literal block or a comment. So the scanner is a small state machine. It sees one line at a time, remembers whether a block is open and how it will close, and returns the line's kind. It does no IO and allocates nothing.
+
+The scanner does not know about labels. It cannot tell a labeled block from an illustration, because that depends on the lines before the block. It only reports that a code block opened, that a line is code, and that the block closed. The parser, in the next chapter, adds the meaning.
+
+The scanner is one file. Its public parts are the kinds of line, the `Scanner` itself, and a few small functions that the parser and the commands also need.
+
+… :file: scan.zig
+[source,zig]
+----
+… header
+
+… Format
+
+… Kind
+
+… State
+
+… commands
+
+… splitLines
+
+… Scanner
+
+… isDelimiter
+
+… Fence
+
+… directories
+
+… test helpers
+
+… asciidoc tests
+
+… Markdown tests
+----
+
+… header :file: scan.zig
+[source,zig]
+----
+//! Classifies the lines of one document, asciidoc or Markdown. It follows the
+//! block structure (L5, M1, M3) but knows nothing of labels: the parser decides
+//! what a command or a block means. No IO.
+
+const std = @import("std");
+----
+
+Two formats are read. Asciidoc is the main one. Markdown has the same commands, and finds its blocks in its own way (M1 to M5).
+
+… Format :file: scan.zig
+[source,zig]
+----
+pub const Format = enum { asciidoc, markdown };
+----
+
+These are the classes of line. Most are what they say. Two deserve a note.
+
+`code` is any line inside a code block, whether or not it holds a command: inside a block, the parser decides what a command means. `skip` is a line that Litmus never reads: comment lines and blocks, literal and passthrough blocks, HTML comments (L5, M3). Keeping these apart from `prose` matters, because a label must be followed directly by its block (L2), and a comment between them is an error.
+
+Attribute and title lines (`[source,zig]`, `.The loop`) are the only lines allowed between a label and its block, so they get kinds of their own. Markdown has neither, and never produces them.
+
+… Kind :file: scan.zig
+[source,zig]
+----
+pub const Kind = enum {
+    /// Text outside any block.
+    prose,
+    /// A Litmus command outside code blocks: a document command.
+    command,
+    /// A block attribute line such as `[source,zig]` (asciidoc only).
+    attribute,
+    /// A block title line such as `.The loop` (asciidoc only).
+    title,
+    /// An `include::` line outside any block (asciidoc only).
+    include,
+    /// A `:litmus-dir:` entry (L8, M5).
+    dir,
+    /// The line that opens a code block.
+    open,
+    /// The line that closes a code block.
+    close,
+    /// A line inside a code block. It may hold a Litmus command, and the parser
+    /// decides what that means.
+    code,
+    /// A line that Litmus never reads (L5, M3): comment lines and blocks, literal
+    /// and passthrough blocks, HTML comments.
+    skip,
+};
+----
+
+The scanner is always in one of these states. `prose` is outside any block. `listing` and `fenced` are the two code blocks. `literal`, `comment` and `passthrough` are asciidoc blocks whose lines are ignored. `html_comment` is Markdown's.
+
+… State :file: scan.zig
+[source,zig]
+----
+const State = enum { prose, listing, fenced, literal, comment, passthrough, html_comment };
+----
+
+A Litmus command is the ellipsis character (U+2026) followed by a space, after any spaces and tabs. Three full stops are not a command, and an ellipsis with no space after it is not either, so `…` in running text is safe.
+
+`commandOf` returns the bytes before the ellipsis, which are the indent of an excerpt command (L3), and the text after it. It is used for document commands in prose, for excerpt commands in code, and by the scanner to classify lines.
+
+… commands :file: scan.zig
+[source,zig]
+----
+/// A Litmus command line: the bytes before the ellipsis, and the text after it.
+pub const Command = struct { indent: []const u8, text: []const u8 };
+
+const ellipsis = "\u{2026} ";
+
+/// The Litmus command a line holds, if it is one: after any spaces and tabs, the
+/// ellipsis and a space.
+pub fn commandOf(line: []const u8) ?Command {
+    var i: usize = 0;
+    while (i < line.len and (line[i] == ' ' or line[i] == '\t')) i += 1;
+    if (!std.mem.startsWith(u8, line[i..], ellipsis)) return null;
+    return .{ .indent = line[0..i], .text = line[i + ellipsis.len ..] };
+}
+----
+
+Documents are cut into lines at `\n` and nowhere else (L7). A `\r` before the `\n` stays part of the line, so that tangling reproduces it. A last line with no `\n` still counts as a line, and a final `\n` does not start another one.
+
+The lines are slices of the document's text, cut in one pass: first the newlines are counted, so that the array of lines is allocated once at its exact size.
+
+… splitLines :file: scan.zig
+[source,zig]
+----
+/// Splits a document into lines at `\n` (L7). A final line without `\n` is a line.
+/// A final `\n` does not start another.
+pub fn splitLines(arena: std.mem.Allocator, text: []const u8) ![]const []const u8 {
+    const count = std.mem.countScalar(u8, text, '\n') + @intFromBool(text.len > 0 and text[text.len - 1] != '\n');
+    const lines = try arena.alloc([]const u8, count);
+    var start: usize = 0;
+    for (lines) |*line| {
+        const end = std.mem.indexOfScalarPos(u8, text, start, '\n') orelse text.len;
+        line.* = text[start..end];
+        start = end + 1;
+    }
+    return lines;
+}
+----
+
+The scanner holds its state and what it needs to leave it. An asciidoc block closes only at a line equal to the one that opened it (so a block opened with five hyphens can hold a line of four). A Markdown fence closes at a line of the same character, at least as long.
+
+`next` is the whole interface: give it the next line, get its kind. It dispatches to the code for the document's format.
+
+… Scanner :file: scan.zig
+[source,zig]
+----
+pub const Scanner = struct {
+    format: Format,
+    state: State = .prose,
+    /// The line that opened the current asciidoc block, which only an equal line closes.
+    delim: []const u8 = "",
+    /// The character and length of a Markdown fence.
+    fence_char: u8 = 0,
+    fence_len: usize = 0,
+
+    pub fn init(format: Format) Scanner {
+        return .{ .format = format };
+    }
+
+    /// True while a code block is open: at the end of a document, that is C6.
+    pub fn inCodeBlock(self: *const Scanner) bool {
+        return self.state == .listing or self.state == .fenced;
+    }
+
+    pub fn next(self: *Scanner, line: []const u8) Kind {
+        return switch (self.format) {
+            .asciidoc => self.nextAsciidoc(line),
+            .markdown => self.nextMarkdown(line),
+        };
+    }
+
+    fn nextAsciidoc(self: *Scanner, line: []const u8) Kind {
+        switch (self.state) {
+            .prose => {},
+            … asciidoc, inside a block
+            … asciidoc, inside a fence
+            .html_comment => unreachable,
+        }
+        … asciidoc, comments
+        … asciidoc, block openings
+        … asciidoc, fence opening
+        … asciidoc, the other lines
+    }
+
+    fn enter(self: *Scanner, state: State, line: []const u8) void {
+        self.state = state;
+        self.delim = line;
+    }
+
+    fn nextMarkdown(self: *Scanner, line: []const u8) Kind {
+        switch (self.state) {
+            .prose => {},
+            … Markdown, inside a fence
+            … Markdown, inside a comment
+            else => unreachable,
+        }
+        … Markdown, fence opening
+        … Markdown, the other lines
+    }
+};
+----
+
+Asciidoc first. Inside a block, a line is either the line that closes it, or a line of the block. Only a listing block is code. The other three are skipped, but they still need tracking, so that a `----` inside a literal block is not taken for the start of a code block (L5).
+
+… asciidoc, inside a block :file: scan.zig
+[source,zig]
+----
+.listing, .literal, .comment, .passthrough => {
+    if (std.mem.eql(u8, line, self.delim)) {
+        const was_code = self.state == .listing;
+        self.state = .prose;
+        return if (was_code) .close else .skip;
+    }
+    return if (self.state == .listing) .code else .skip;
+},
+----
+
+Asciidoc also accepts the fenced form that Markdown made familiar, three backticks with an optional language. It closes at three backticks and nothing else.
+
+… asciidoc, inside a fence :file: scan.zig
+[source,zig]
+----
+.fenced => {
+    if (std.mem.eql(u8, line, "```")) {
+        self.state = .prose;
+        return .close;
+    }
+    return .code;
+},
+----
+
+Outside any block, a line starting with two slashes is a comment line, and a line of four or more slashes opens a comment block. Both are skipped (L5).
+
+… asciidoc, comments :file: scan.zig
+[source,zig]
+----
+if (std.mem.startsWith(u8, line, "//")) {
+    if (isDelimiter(line, '/')) {
+        self.enter(.comment, line);
+    }
+    return .skip;
+}
+----
+
+The other blocks open on a line that is a single character repeated four or more times: hyphens for a listing, full stops for a literal block, plus signs for passthrough. Only the listing is code and gives `open`.
+
+… asciidoc, block openings :file: scan.zig
+[source,zig]
+----
+if (isDelimiter(line, '-')) {
+    self.enter(.listing, line);
+    return .open;
+}
+if (isDelimiter(line, '.')) {
+    self.enter(.literal, line);
+    return .skip;
+}
+if (isDelimiter(line, '+')) {
+    self.enter(.passthrough, line);
+    return .skip;
+}
+----
+
+Three backticks open a fenced block. A backtick later on the line means this is inline code in running text, not a fence.
+
+… asciidoc, fence opening :file: scan.zig
+[source,zig]
+----
+if (std.mem.startsWith(u8, line, "```") and std.mem.indexOfScalar(u8, line[3..], '`') == null) {
+    self.state = .fenced;
+    return .open;
+}
+----
+
+What is left is classified by how the line begins. A command comes first, since it is the line Litmus exists for. Then `include::`, the directory entry, an attribute line in square brackets, and a title, which is a full stop followed by something that is not a full stop or a space (so `..` and `. item` are not titles).
+
+… asciidoc, the other lines :file: scan.zig
+[source,zig]
+----
+if (commandOf(line) != null) return .command;
+if (std.mem.startsWith(u8, line, "include::")) return .include;
+if (std.mem.startsWith(u8, line, ":litmus-dir:")) return .dir;
+if (line.len >= 2 and line[0] == '[' and line[line.len - 1] == ']') return .attribute;
+if (line.len >= 2 and line[0] == '.' and line[1] != '.' and line[1] != ' ' and line[1] != '\t') return .title;
+return .prose;
+----
+
+Markdown next, with the same shape. Inside a fence, a line closes it if it is a fence of the same character, at least as long as the opening one, with nothing after it (M1). Everything else is code.
+
+… Markdown, inside a fence :file: scan.zig
+[source,zig]
+----
+.fenced => {
+    if (isFence(line)) |fence| {
+        if (fence.char == self.fence_char and fence.len >= self.fence_len and fence.rest.len == 0) {
+            self.state = .prose;
+            return .close;
+        }
+    }
+    return .code;
+},
+----
+
+Inside an HTML comment every line is skipped until one contains the closing mark (M3).
+
+… Markdown, inside a comment :file: scan.zig
+[source,zig]
+----
+.html_comment => {
+    if (std.mem.indexOf(u8, line, "-->") != null) self.state = .prose;
+    return .skip;
+},
+----
+
+A fence opens on three or more backticks or tildes. The scanner remembers the character and the length. A backtick fence cannot have a backtick in its info string, which tells a fence from inline code.
+
+… Markdown, fence opening :file: scan.zig
+[source,zig]
+----
+if (isFence(line)) |fence| {
+    const backtick_in_info = fence.char == '`' and std.mem.indexOfScalar(u8, fence.rest, '`') != null;
+    if (!backtick_in_info) {
+        self.state = .fenced;
+        self.fence_char = fence.char;
+        self.fence_len = fence.len;
+        return .open;
+    }
+}
+----
+
+Then a command, a directory entry, and the start of an HTML comment. A comment that opens and closes on one line leaves the scanner in prose, and a line that starts with the comment is skipped. A comment that begins after some text leaves the line as prose, since the text may be real.
+
+… Markdown, the other lines :file: scan.zig
+[source,zig]
+----
+if (commandOf(line) != null) return .command;
+if (markdownDir(line) != null) return .dir;
+if (std.mem.indexOf(u8, line, "<!--")) |at| {
+    const rest = line[at + 4 ..];
+    if (std.mem.indexOf(u8, rest, "-->") == null) self.state = .html_comment;
+    if (std.mem.trim(u8, line[0..at], " \t").len == 0) return .skip;
+}
+return .prose;
+----
+
+The helpers come last. A delimiter line is four or more of one character and nothing else.
+
+… isDelimiter :file: scan.zig
+[source,zig]
+----
+/// A line of at least four of `char` and nothing else.
+fn isDelimiter(line: []const u8, char: u8) bool {
+    if (line.len < 4) return false;
+    for (line) |c| if (c != char) return false;
+    return true;
+}
+----
+
+A Markdown fence line has up to three spaces of indent, then three or more backticks or tildes. `isFence` returns the character, the length and what follows, trimmed. Indented code (four spaces) is not a code block for Litmus (M1).
+
+… Fence :file: scan.zig
+[source,zig]
+----
+const Fence = struct { char: u8, len: usize, rest: []const u8 };
+
+/// A Markdown fence line: up to three spaces, then three or more backticks or tildes.
+fn isFence(line: []const u8) ?Fence {
+    var i: usize = 0;
+    while (i < line.len and i < 3 and line[i] == ' ') i += 1;
+    if (i >= line.len or (line[i] != '`' and line[i] != '~')) return null;
+    const char = line[i];
+    var j = i;
+    while (j < line.len and line[j] == char) j += 1;
+    if (j - i < 3) return null;
+    return .{ .char = char, .len = j - i, .rest = std.mem.trim(u8, line[j..], " \t") };
+}
+----
+
+The two spellings of the directory entry (L8, M5) are read here. The Markdown one hides in an HTML comment, `<!-- :litmus-dir: src/core -->`, so that it does not show on the page.
+
+… directories :file: scan.zig
+[source,zig]
+----
+/// The directory in a line `<!-- :litmus-dir: src/core -->` (M5).
+pub fn markdownDir(line: []const u8) ?[]const u8 {
+    const body = std.mem.trim(u8, line, " \t");
+    if (!std.mem.startsWith(u8, body, "<!--") or !std.mem.endsWith(u8, body, "-->")) return null;
+    const inner = std.mem.trim(u8, body[4 .. body.len - 3], " \t");
+    if (!std.mem.startsWith(u8, inner, ":litmus-dir:")) return null;
+    return std.mem.trim(u8, inner[":litmus-dir:".len..], " \t");
+}
+
+/// The directory in an asciidoc line `:litmus-dir: src/core` (L8).
+pub fn asciidocDir(line: []const u8) []const u8 {
+    return std.mem.trim(u8, line[":litmus-dir:".len..], " \t");
+}
+----
+
+=== Tests
+
+Every test names the rule it checks. They share one helper, which scans a document and compares the kind of every line.
+
+`expectKinds` prints the line and both kinds when they differ, so a failure says which line was misread.
+
+… test helpers :file: scan.zig
+[source,zig]
+----
+fn expectKinds(format: Format, text: []const u8, expected: []const Kind) !void {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const lines = try splitLines(arena_state.allocator(), text);
+    try std.testing.expectEqual(expected.len, lines.len);
+    var scanner = Scanner.init(format);
+    for (lines, expected, 0..) |line, want, i| {
+        const got = scanner.next(line);
+        std.testing.expectEqual(want, got) catch |err| {
+            std.debug.print("line {d} {s}: wanted {s}, got {s}\n", .{ i + 1, line, @tagName(want), @tagName(got) });
+            return err;
+        };
+    }
+}
+
+test "splitLines (L7): \\r stays in the line, a final \\n starts no line" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const lines = try splitLines(arena_state.allocator(), "a\r\nb\n\nc");
+    try std.testing.expectEqual(4, lines.len);
+    try std.testing.expectEqualStrings("a\r", lines[0]);
+    try std.testing.expectEqualStrings("", lines[2]);
+    try std.testing.expectEqualStrings("c", lines[3]);
+    try std.testing.expectEqual(0, (try splitLines(arena_state.allocator(), "")).len);
+    try std.testing.expectEqual(1, (try splitLines(arena_state.allocator(), "x\n")).len);
+}
+
+test "commandOf (Terms): indent, ellipsis, space" {
+    const c = commandOf("\t  \u{2026} name :file: a.zig").?;
+    try std.testing.expectEqualStrings("\t  ", c.indent);
+    try std.testing.expectEqualStrings("name :file: a.zig", c.text);
+    try std.testing.expect(commandOf("\u{2026}name") == null);
+    try std.testing.expect(commandOf("\u{2026}") == null);
+    try std.testing.expect(commandOf("... name") == null);
+    try std.testing.expect(commandOf("x \u{2026} name") == null);
+}
+----
+
+The asciidoc tests cover the lines between a label and its block (L2), commands in code (L4), what is ignored (L5), the closing rule for blocks with longer delimiters, fenced blocks, carriage returns (L7), and a block left open at the end of the document (C6).
+
+… asciidoc tests :file: scan.zig
+[source,zig]
+----
+test "L2: attribute and title lines sit between a label and its block" {
+    try expectKinds(.asciidoc,
+        \\… :file: a.zig
+        \\.The loop
+        \\[source,zig]
+        \\----
+        \\code
+        \\----
+        \\.. not a title
+        \\. nor this
+    , &.{ .command, .title, .attribute, .open, .code, .close, .prose, .prose });
+}
+
+test "L4: a command in a block is code to the scanner, and a command outside is a command" {
+    try expectKinds(.asciidoc,
+        \\… :file: a.zig
+        \\----
+        \\  … body
+        \\----
+    , &.{ .command, .open, .code, .close });
+}
+
+test "L5: commands are ignored in literal, comment and passthrough blocks and on comment lines" {
+    try expectKinds(.asciidoc,
+        \\....
+        \\… a :file: x
+        \\....
+        \\////
+        \\… a :file: x
+        \\////
+        \\++++
+        \\… a :file: x
+        \\++++
+        \\// … a :file: x
+        \\… a :file: x
+    , &.{ .skip, .skip, .skip, .skip, .skip, .skip, .skip, .skip, .skip, .skip, .command });
+}
+
+test "L5: a longer delimiter holds a shorter one, and only an equal line closes" {
+    try expectKinds(.asciidoc,
+        \\-----
+        \\----
+        \\… x
+        \\-----
+        \\… y
+    , &.{ .open, .code, .code, .close, .command });
+    try expectKinds(.asciidoc,
+        \\....
+        \\----
+        \\.....
+        \\....
+        \\----
+    , &.{ .skip, .skip, .skip, .skip, .open });
+}
+
+test "L1: fenced blocks in asciidoc" {
+    try expectKinds(.asciidoc,
+        \\```zig
+        \\----
+        \\… x
+        \\```
+        \\`code` and ```` more
+    , &.{ .open, .code, .code, .close, .prose });
+}
+
+test "L7: a \\r stays part of the line, so it does not close a block" {
+    try expectKinds(.asciidoc, "----\r\ncode\r\n----\r\n", &.{ .prose, .prose, .prose });
+    try expectKinds(.asciidoc, "----\ncode\r\n----\n", &.{ .open, .code, .close });
+}
+
+test "include and dir lines" {
+    try expectKinds(.asciidoc,
+        \\:litmus-dir: src/core
+        \\include::a.adoc[]
+        \\----
+        \\include::a.adoc[]
+        \\:litmus-dir: x
+        \\----
+    , &.{ .dir, .include, .open, .code, .code, .close });
+    try std.testing.expectEqualStrings("src/core", asciidocDir(":litmus-dir:  src/core "));
+}
+
+test "a command needs a space after the ellipsis" {
+    try expectKinds(.asciidoc, "\u{2026}x\n\u{2026} x\n   \u{2026} x\n", &.{ .prose, .command, .command });
+}
+
+test "tabs as indent" {
+    try expectKinds(.asciidoc, "\t\u{2026} x\n", &.{.command});
+}
+
+test "C6: a block still open at the end" {
+    var scanner = Scanner.init(.asciidoc);
+    _ = scanner.next("----");
+    try std.testing.expect(scanner.inCodeBlock());
+    _ = scanner.next("----");
+    try std.testing.expect(!scanner.inCodeBlock());
+    _ = scanner.next("....");
+    try std.testing.expect(!scanner.inCodeBlock());
+}
+----
+
+The Markdown tests cover the fences (M1), HTML comments (M3), the lack of `include::` (M4) and the directory comment (M5).
+
+… Markdown tests :file: scan.zig
+[source,zig]
+----
+test "M1: Markdown fences" {
+    try expectKinds(.markdown,
+        \\… :file: a.zig
+        \\```zig
+        \\code
+        \\```
+        \\~~~~
+        \\```
+        \\~~~
+        \\~~~~~
+        \\  ```
+        \\  inline ``` is not a fence
+        \\  ```
+    , &.{ .command, .open, .code, .close, .open, .code, .code, .close, .open, .code, .close });
+}
+
+test "M1: a closing fence is at least as long and has no info string" {
+    try expectKinds(.markdown,
+        \\````
+        \\```
+        \\```zig
+        \\`````
+    , &.{ .open, .code, .code, .close });
+}
+
+test "M1: indented code is not a code block, and a backtick fence has no backtick in its info" {
+    try expectKinds(.markdown, "    code\n``` a`b\n", &.{ .prose, .prose });
+}
+
+test "M3: commands are ignored in HTML comments" {
+    try expectKinds(.markdown,
+        \\<!-- … a :file: x -->
+        \\<!--
+        \\… a :file: x
+        \\-->
+        \\text <!-- start
+        \\… a :file: x
+        \\end -->
+        \\… a :file: x
+    , &.{ .skip, .skip, .skip, .skip, .prose, .skip, .skip, .command });
+}
+
+test "M4: Markdown has no include" {
+    try expectKinds(.markdown, "include::a.md[]\n:litmus-dir: x\n", &.{ .prose, .prose });
+}
+
+test "M5: the directory line" {
+    try expectKinds(.markdown, "<!-- :litmus-dir: src/core -->\n<!-- other -->\n", &.{ .dir, .skip });
+    try std.testing.expectEqualStrings("src/core", markdownDir("<!--   :litmus-dir:  src/core   -->").?);
+    try std.testing.expect(markdownDir("<!-- x -->") == null);
+}
+----
