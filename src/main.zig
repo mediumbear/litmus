@@ -25,6 +25,7 @@ const usage =
     \\       litmus untangle [-o DIR] [-f FILE]... [--force] DOCUMENT...
     \\       litmus sync [-o DIR] DOCUMENT...
     \\       litmus watch [-o DIR] [--interval MS] DOCUMENT...
+    \\       litmus style DOCUMENT...
     \\
 ;
 
@@ -525,6 +526,19 @@ fn watchedPaths(ctx: Context, options: Options, docs: []const types.Document, fi
     return paths.items;
 }
 
+/// L10: the style file of each document of the set.
+fn styleCommand(ctx: Context, args: []const []const u8) !u8 {
+    const options = (try parseOptions(ctx, args, .{})) orelse return 2;
+    if (!try documentsOk(ctx, options.positional)) return 2;
+    var diags = types.Diagnostics.init(ctx.arena);
+    var fs: DiskFs = .{ .io = ctx.io };
+    const set = try docset.load(ctx.arena, &fs, options.positional, &diags);
+    for (set.docs) |doc| try ctx.out.print("{s}: {s}\n", .{ doc.path, doc.style orelse "none" });
+    if (diags.list.items.len == 0) return 0;
+    try printDiagnostics(ctx, &diags, set.docs);
+    return 1;
+}
+
 fn initCommand(ctx: Context, exe: []const u8, args: []const []const u8) !u8 {
     const options = (try parseOptions(ctx, args, .{})) orelse return 2;
     if (!try documentsOk(ctx, options.positional)) return 2;
@@ -560,6 +574,7 @@ pub fn main(init: std.process.Init) !u8 {
         if (std.mem.eql(u8, command, "untangle")) break :run untangleCommand(ctx, rest);
         if (std.mem.eql(u8, command, "sync")) break :run syncCommand(ctx, rest);
         if (std.mem.eql(u8, command, "watch")) break :run watchCommand(ctx, rest);
+        if (std.mem.eql(u8, command, "style")) break :run styleCommand(ctx, rest);
         if (std.mem.eql(u8, command, "guide")) {
             try out.writeAll(guide_text);
             break :run 0;

@@ -19,6 +19,10 @@ pub const Kind = enum {
     include,
     /// A `:litmus-dir:` entry (L8, M5).
     dir,
+    /// A `:litmus-style:` entry (L10).
+    style,
+    /// A `:litmus-companion:` entry (L11).
+    companion,
     /// The line that opens a code block.
     open,
     /// The line that closes a code block.
@@ -131,6 +135,8 @@ pub const Scanner = struct {
         if (commandOf(line) != null) return .command;
         if (std.mem.startsWith(u8, line, "include::")) return .include;
         if (std.mem.startsWith(u8, line, ":litmus-dir:")) return .dir;
+        if (std.mem.startsWith(u8, line, ":litmus-style:")) return .style;
+        if (std.mem.startsWith(u8, line, ":litmus-companion:")) return .companion;
         if (line.len >= 2 and line[0] == '[' and line[line.len - 1] == ']') return .attribute;
         if (line.len >= 2 and line[0] == '.' and line[1] != '.' and line[1] != ' ' and line[1] != '\t') return .title;
         return .prose;
@@ -170,6 +176,8 @@ pub const Scanner = struct {
         }
         if (commandOf(line) != null) return .command;
         if (markdownDir(line) != null) return .dir;
+        if (markdownEntry(line, ":litmus-style:") != null) return .style;
+        if (markdownEntry(line, ":litmus-companion:") != null) return .companion;
         if (std.mem.indexOf(u8, line, "<!--")) |at| {
             const rest = line[at + 4 ..];
             if (std.mem.indexOf(u8, rest, "-->") == null) self.state = .html_comment;
@@ -202,16 +210,26 @@ fn isFence(line: []const u8) ?Fence {
 
 /// The directory in a line `<!-- :litmus-dir: src/core -->` (M5).
 pub fn markdownDir(line: []const u8) ?[]const u8 {
+    return markdownEntry(line, ":litmus-dir:");
+}
+
+/// The value of an entry such as `<!-- :litmus-style: style.md -->` in Markdown.
+pub fn markdownEntry(line: []const u8, name: []const u8) ?[]const u8 {
     const body = std.mem.trim(u8, line, " \t");
     if (!std.mem.startsWith(u8, body, "<!--") or !std.mem.endsWith(u8, body, "-->")) return null;
     const inner = std.mem.trim(u8, body[4 .. body.len - 3], " \t");
-    if (!std.mem.startsWith(u8, inner, ":litmus-dir:")) return null;
-    return std.mem.trim(u8, inner[":litmus-dir:".len..], " \t");
+    if (!std.mem.startsWith(u8, inner, name)) return null;
+    return std.mem.trim(u8, inner[name.len..], " \t");
 }
 
 /// The directory in an asciidoc line `:litmus-dir: src/core` (L8).
 pub fn asciidocDir(line: []const u8) []const u8 {
-    return std.mem.trim(u8, line[":litmus-dir:".len..], " \t");
+    return asciidocEntry(line, ":litmus-dir:");
+}
+
+/// The value of an asciidoc entry such as `:litmus-style: style.md`.
+pub fn asciidocEntry(line: []const u8, name: []const u8) []const u8 {
+    return std.mem.trim(u8, line[name.len..], " \t");
 }
 
 fn expectKinds(format: Format, text: []const u8, expected: []const Kind) !void {
@@ -395,6 +413,13 @@ test "M3: commands are ignored in HTML comments" {
 
 test "M4: Markdown has no include" {
     try expectKinds(.markdown, "include::a.md[]\n:litmus-dir: x\n", &.{ .prose, .prose });
+}
+
+test "L10, L11: the style and companion entries" {
+    try expectKinds(.asciidoc, ":litmus-style: style.md\n:litmus-companion:\n:litmus-other: x\n", &.{ .style, .companion, .prose });
+    try expectKinds(.markdown, "<!-- :litmus-style: ../s.md -->\n<!-- :litmus-companion: -->\n", &.{ .style, .companion });
+    try std.testing.expectEqualStrings("../s.md", markdownEntry("<!-- :litmus-style:  ../s.md -->", ":litmus-style:").?);
+    try std.testing.expectEqualStrings("s.md", asciidocEntry(":litmus-style:  s.md ", ":litmus-style:"));
 }
 
 test "M5: the directory line" {

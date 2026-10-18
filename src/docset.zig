@@ -18,6 +18,8 @@ pub const Set = struct {
     /// Every labeled block of the set in reading order: a block of an including
     /// document that comes after an include follows the included document's blocks.
     blocks: []const Block,
+    /// Whether any document of the set is a companion (R1).
+    companion: bool = false,
 };
 
 /// `.adoc`, `.asciidoc` and `.asc` are asciidoc, and `.md` is Markdown.
@@ -58,11 +60,14 @@ const Loader = struct {
     blocks: std.ArrayList(Block) = .empty,
     /// The documents of the set by path, with whether they are still being read.
     seen: std.StringHashMapUnmanaged(Seen) = .empty,
+    /// The style files already found to exist (C12).
+    styles: std.StringHashMapUnmanaged(void) = .empty,
+    companion: bool = false,
 
     const Seen = struct { doc: u32, reading: bool };
     const From = struct { doc: u32, line: u32 };
 
-    fn visit(self: *Loader, path: []const u8, from: ?From) !void {
+    fn visit(self: *Loader, path: []const u8, from: ?From, inherited: ?[]const u8) !void {
         if (self.seen.get(path)) |seen| {
             const at: From = from orelse .{ .doc = seen.doc, .line = 0 };
             if (seen.reading) {
@@ -89,6 +94,20 @@ const Loader = struct {
             return;
         }
         const parsed = try parse.parse(self.arena, index, self.docs.items[index], self.diags);
+        // L10: the document's own style, or the one it inherits. C12: the file must exist.
+        var style = inherited;
+        if (parsed.style) |own| {
+            const joined = try joinPath(self.arena, self.docs.items[index].dir, own.path);
+            if (!self.styles.contains(joined)) {
+                if (self.read(self.fs, self.arena, joined) == null) {
+                    try self.diags.add(index, own.line, "C12: the style file {s} does not exist", .{joined});
+                } else try self.styles.put(self.arena, joined, {});
+            }
+            style = joined;
+        }
+        self.docs.items[index].style = style;
+        self.docs.items[index].companion = parsed.companion;
+        if (parsed.companion) self.companion = true;
         var b: usize = 0;
         var i: usize = 0;
         while (b < parsed.blocks.len or i < parsed.includes.len) {
@@ -99,7 +118,7 @@ const Loader = struct {
                 const include = parsed.includes[i];
                 i += 1;
                 const child = try joinPath(self.arena, self.docs.items[index].dir, include.path);
-                try self.visit(child, .{ .doc = index, .line = include.line });
+                try self.visit(child, .{ .doc = index, .line = include.line }, style);
             }
         }
     }
@@ -115,8 +134,8 @@ pub fn load(arena: Allocator, fs: anytype, paths: []const []const u8, diags: *Di
         }
     };
     var loader: Loader = .{ .arena = arena, .fs = fs, .read = Thunk.read, .diags = diags };
-    for (paths) |path| try loader.visit(try joinPath(arena, "", path), null);
-    return .{ .docs = loader.docs.items, .blocks = loader.blocks.items };
+    for (paths) |path| try loader.visit(try joinPath(arena, "", path), null, null);
+    return .{ .docs = loader.docs.items, .blocks = loader.blocks.items, .companion = loader.companion };
 }
 
 // Tests ----------------------------------------------------------------------
@@ -210,6 +229,35 @@ test "C10: a missing document, and a document of an unknown kind" {
     try expectDiag(diags, 0, 2, "notes.txt is not");
     try expectDiag(diags, 3, 0, "cannot read missing.md");
     try t.expectEqual(4, set.docs.len);
+}
+
+test "L10, C12: a style is inherited by included documents, unless they name their own" {
+    var arena_state = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var fs: MemoryFs = .{ .files = &.{
+        .{ "book/main.adoc", ":litmus-style: style.md\ninclude::part/one.adoc[]\ninclude::two.adoc[]\n" },
+        .{ "book/part/one.adoc", ":litmus-style: ../other.md\n" },
+        .{ "book/two.adoc", "" },
+        .{ "book/style.md", "# Style" },
+        .{ "book/other.md", "# Other" },
+        .{ "plain.adoc", ":litmus-companion:\n" },
+    } };
+    var diags = Diagnostics.init(a);
+    const set = try load(a, &fs, &.{ "book/main.adoc", "plain.adoc" }, &diags);
+    try t.expectEqual(0, diags.list.items.len);
+    try t.expectEqualStrings("book/style.md", set.docs[0].style.?);
+    try t.expectEqualStrings("book/other.md", set.docs[1].style.?);
+    try t.expectEqualStrings("book/style.md", set.docs[2].style.?);
+    try t.expect(set.docs[3].style == null);
+    // R1: one companion makes the set a companion.
+    try t.expect(set.docs[3].companion);
+    try t.expect(set.companion);
+
+    var missing: MemoryFs = .{ .files = &.{.{ "a.adoc", "\n:litmus-style: gone.md\n" }} };
+    var diags2 = Diagnostics.init(a);
+    _ = try load(a, &missing, &.{"a.adoc"}, &diags2);
+    try expectDiag(diags2, 0, 2, "C12");
 }
 
 test "formatOf and joinPath" {

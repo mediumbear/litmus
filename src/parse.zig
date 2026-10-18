@@ -22,6 +22,10 @@ pub const Include = struct {
 pub const Parsed = struct {
     blocks: []const Block,
     includes: []const Include,
+    /// The style file the document names (L10), as written, with its line.
+    style: ?Include = null,
+    /// Whether the document says `:litmus-companion:` (L11).
+    companion: bool = false,
 };
 
 const blank = " \t\r";
@@ -127,6 +131,8 @@ pub fn parse(arena: Allocator, doc_index: u32, doc: Document, diags: *Diagnostic
     var litmus_dir: []const u8 = "";
     var dir_seen = false;
     var command_seen = false;
+    var style: ?Include = null;
+    var companion = false;
 
     var pending: ?Label = null;
     var block_label: ?Label = null;
@@ -167,7 +173,7 @@ pub fn parse(arena: Allocator, doc_index: u32, doc: Document, diags: *Diagnostic
                 block_label = null;
                 continue;
             },
-            .prose, .skip, .command, .include, .dir => {},
+            .prose, .skip, .command, .include, .dir, .style, .companion => {},
         }
         // Whatever else comes after a document command ends its wait for a block (L2).
         if (pending) |label| {
@@ -205,12 +211,32 @@ pub fn parse(arena: Allocator, doc_index: u32, doc: Document, diags: *Diagnostic
                 }
                 dir_seen = true;
             },
+            .style => {
+                const value = if (doc.format == .markdown) scan.markdownEntry(line, ":litmus-style:").? else scan.asciidocEntry(line, ":litmus-style:");
+                if (command_seen) {
+                    try diags.add(doc_index, n, "C8: :litmus-style: comes after a document command", .{});
+                } else if (style != null) {
+                    try diags.add(doc_index, n, "C8: :litmus-style: appears twice", .{});
+                } else if (value.len == 0 or std.mem.indexOfScalar(u8, value, '\t') != null) {
+                    try diags.add(doc_index, n, "C7: the style needs a path without tabs", .{});
+                } else {
+                    style = .{ .line = n, .path = value };
+                }
+            },
+            .companion => {
+                if (command_seen) {
+                    try diags.add(doc_index, n, "C8: :litmus-companion: comes after a document command", .{});
+                } else if (companion) {
+                    try diags.add(doc_index, n, "C8: :litmus-companion: appears twice", .{});
+                }
+                companion = true;
+            },
             else => {},
         }
     }
     if (pending) |label| try diags.add(doc_index, label.line, "C5: the label is not followed by a code block", .{});
     if (scanner.inCodeBlock()) try diags.add(doc_index, @intCast(block_open + 1), "C6: the code block is never closed", .{});
-    return .{ .blocks = try blocks.toOwnedSlice(arena), .includes = try includes.toOwnedSlice(arena) };
+    return .{ .blocks = try blocks.toOwnedSlice(arena), .includes = try includes.toOwnedSlice(arena), .style = style, .companion = companion };
 }
 
 // Tests ----------------------------------------------------------------------
@@ -401,6 +427,28 @@ test "C8: a directory after a document command, or twice" {
     // A directory inside a block is code, not an entry.
     try (try run(a, .asciidoc, "… :file: x\n----\n:litmus-dir: d\n----\n:litmus-dir: e\n")).expectDiag(5, "C8");
     try (try run(a, .asciidoc, "----\n:litmus-dir: d\n----\n:litmus-dir: e\n")).expectNoDiags();
+}
+
+test "L10, L11, C8: the style and the companion mark, before the first document command, once" {
+    var arena_state = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const r = try run(a, .asciidoc, ":litmus-style: ../style.md\n:litmus-companion:\n… :file: x\n----\n----\n");
+    try r.expectNoDiags();
+    try t.expectEqualStrings("../style.md", r.parsed.style.?.path);
+    try t.expectEqual(1, r.parsed.style.?.line);
+    try t.expect(r.parsed.companion);
+    try (try run(a, .asciidoc, "… :file: x\n----\n----\n:litmus-style: s.md\n")).expectDiag(4, "C8");
+    try (try run(a, .asciidoc, ":litmus-style: s.md\n:litmus-style: t.md\n")).expectDiag(2, "C8");
+    try (try run(a, .asciidoc, "… :file: x\n----\n----\n:litmus-companion:\n")).expectDiag(4, "C8");
+    try (try run(a, .asciidoc, ":litmus-style:\n")).expectDiag(1, "C7");
+    const md = try run(a, .markdown, "<!-- :litmus-style: s.md -->\n<!-- :litmus-companion: -->\n");
+    try md.expectNoDiags();
+    try t.expect(md.parsed.companion);
+    // Neither is an entry inside a block.
+    const inside = try run(a, .asciidoc, "… :file: x\n----\n:litmus-style: s.md\n----\n");
+    try inside.expectNoDiags();
+    try t.expect(inside.parsed.style == null);
 }
 
 test "C7: paths" {

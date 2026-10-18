@@ -14,6 +14,11 @@ pub const Document = struct {
     dir: []const u8,
     /// Whether the text ended with `\n`, so that the document can be written back as it was.
     final_newline: bool = true,
+    /// The style file that applies to the document, its own or the one of the document that
+    /// includes it (L10), as a path from the current directory.
+    style: ?[]const u8 = null,
+    /// Whether the document says `:litmus-companion:` (L11).
+    companion: bool = false,
 };
 
 /// What a document command says (L1, L9). Lines count from 1.
