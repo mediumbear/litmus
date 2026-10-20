@@ -19,7 +19,7 @@ done
 # Pictures and animations that the documents use, from passthrough blocks.
 mkdir -p build && rm -rf build/visuals && cp -R visuals build/visuals
 
-for f in litmus.adoc implementation.adoc; do
+for f in index.adoc litmus.adoc implementation.adoc; do
   [ -f "$f" ] && asciidoctor --failure-level WARN -r ./litmus-weave.rb -D build "$f" && echo "Wrote doc/build/${f%.adoc}.html"
 done
 true

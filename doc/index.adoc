@@ -1,0 +1,10 @@
+= Litmus
+:nofooter:
+
+Literate programming for the age of coding agents. Litmus keeps a readable document and the source code it explains in step, both ways: code changes flow into the document, the document tangles back to the code byte for byte, and Litmus checks that it does.
+
+NOTE: Litmus is a work in progress. It is at its best today for documenting a subset of a codebase: one module, one feature, or the code a set of commits touched.
+
+* link:litmus.html[The spec]: what Litmus does, rule by rule.
+* link:implementation.html[Litmus, implemented]: Litmus's own source, written as a literate document with Litmus. It is the largest example there is.
+* https://github.com/YOUR-USER/litmus[The source on GitHub], with instructions for using Litmus on your own code.
