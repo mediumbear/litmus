@@ -4,8 +4,10 @@
 
 > **Work in progress.** Litmus works, and its own source is written with it, but it is young. It is at its best today for **documenting a subset of a codebase**: one module, one feature, the code a set of commits touched. Use it to understand a large feature that you did not write, or that an agent wrote for you. Expect rough edges, and expect things to change.
 
-- **The spec**: [what Litmus does](https://YOUR-USER.github.io/litmus/litmus.html), rule by rule.
-- **The book**: [Litmus, implemented](https://YOUR-USER.github.io/litmus/implementation.html), Litmus's own source as a literate document. It is the largest example there is.
+- **The spec**: [what Litmus does](doc/litmus.adoc), rule by rule.
+- **The book**: [Litmus, implemented](doc/implementation.adoc), Litmus's own source as a literate document. It is the largest example there is.
+
+GitHub shows the asciidoc files as they are. For the full pages, with links between the blocks, diagrams and animations, run `doc/build.sh` and open `doc/build/index.html`.
 
 ## What it looks like
 
@@ -141,11 +143,11 @@ litmus init     [-o DIR] DOCUMENT...
 litmus guide
 ```
 
-`-o DIR` is where the code lives, the current directory by default. The [spec](https://YOUR-USER.github.io/litmus/litmus.html) has every rule.
+`-o DIR` is where the code lives, the current directory by default. The [spec](doc/litmus.adoc) has every rule.
 
 ## Status and limits
 
-- Developed on macOS. CI runs the tests on Linux. Windows is not a target yet.
+- Developed and tested on macOS. Linux should work, but is not tested yet. Windows is not a target yet.
 - `watch` polls the files every 200 milliseconds. That is fine for hundreds of files. A native file watcher is planned.
 - `adopt` splits code by its layout: declarations at the left margin, and the members of long types. It suits Zig, Swift and other brace languages. Python and other languages that use indentation for blocks are split less well.
 - Markdown documents work, and are tested, but nothing large has been written in them yet.
