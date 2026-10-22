@@ -1,17 +1,33 @@
 # Litmus
 
-**Literate programming for the age of coding agents.** Litmus keeps a readable document and the source code it explains in step, both ways. You, or an agent, write and test code as usual. Litmus carries each change into the document and says where prose is needed. The document always tangles back to the code byte for byte, and Litmus checks that it does.
+**Two-way literate programming for codebases written with AI.**
 
-> **Work in progress.** Litmus works, and its own source is written with it, but it is young. It is at its best today for **documenting a subset of a codebase**: one module, one feature, the code a set of commits touched. Use it to understand a large feature that you did not write, or that an agent wrote for you. Expect rough edges, and expect things to change.
+Litmus keeps a readable document and the source code it explains in exact agreement, in both directions. Changes made to the code flow into the document; changes made to the document flow into the code. The source files carry no annotations of any kind, so a document can be written for code that already exists, including code that nobody on the team wrote by hand. An AI agent produces the explanation; Litmus guarantees that it stays true.
 
-- **The spec**: [what Litmus does](doc/litmus.adoc), rule by rule.
-- **The book**: [Litmus, implemented](doc/implementation.adoc), Litmus's own source as a literate document. It is the largest example there is.
+> **Status: work in progress.** Litmus is functional, and its own implementation is maintained as a Litmus document, but it is young software. It is best suited today to documenting a well-defined part of a codebase, such as a module, a feature, or the code touched by a series of commits, rather than an entire system.
 
-GitHub shows the asciidoc files as they are. For the full pages, with links between the blocks, diagrams and animations, run `doc/build.sh` and open `doc/build/index.html`.
+## Introduction
+
+Literate programming, introduced by Knuth with WEB in 1984, presents a program as an essay: prose that explains, with the code arranged in the order that best serves the reader rather than the order the compiler requires. A tool _tangles_ the essay into compilable source. The idea has been admired for four decades and adopted rarely, for a practical reason. Tangling runs in one direction only. Once the generated source is edited, by a programmer under deadline, an automated refactoring, or a formatter, the document is out of date, and nothing brings it back. Documentation generators avoid this by reading comments embedded in the source, but they inherit the file's order and require the code itself to carry the explanation.
+
+Two developments change the trade-off. First, much new code is now written or modified by AI agents, which work in source files with a compiler and tests in the loop and would gain nothing from editing a document instead. Second, the same agents are capable writers of explanatory prose, given the code and a description of the intended reader. What remains missing is a mechanism that lets code and document evolve independently while remaining provably consistent.
+
+Litmus provides that mechanism. It records, for every line of every generated file, the document line it came from, and it uses that record to carry edits in the code back into the document (_untangle_) as readily as it carries the document into the code (_tangle_). Every operation ends with a check that the document reproduces the source files byte for byte; an edit that cannot be placed exactly is reported rather than guessed. The record lives in a separate file, so the source files remain ordinary code that any tool, editor, or reviewer can work with unchanged.
+
+This design supports a workflow in which the roles are divided by strength. Agents write and test code where they work best, in the source files. Litmus carries each change into the document and lists the blocks that now need prose. Agents, or people, write that prose, guided by a style file that states who the reader is and how ideas should be presented. People read the result.
+
+Litmus makes the following contributions:
+
+- **Exact two-way synchronisation.** `tangle` and `untangle` are inverses for every change that can be placed unambiguously, and every result is verified against the source files before it is written. `sync` determines the direction automatically, and `watch` applies it on every save.
+- **No annotations in the code.** Provenance is kept in a sidecar map, never in the source. Litmus can therefore document any existing codebase, in any language, without asking anyone to change how they write code.
+- **Documents for code that already exists.** `adopt` turns a set of files into a skeleton document, split into named excerpts at their declarations and verified to reproduce the files exactly. An agent then reorders the excerpts into an explanation and writes the prose. _Companion_ documents follow a codebase without ever writing to it, which suits teams that want to understand a feature rather than adopt a new way of working.
+- **Built for agents.** Every command ends with a `next:` line that states the next action. `litmus guide` explains the workflow to any agent, `litmus init` wires it into `AGENTS.md` and `CLAUDE.md`, and a Claude Code skill takes an agent from a list of files to a finished, rendered document.
+
+The [specification](doc/litmus.adoc) defines every behaviour as a numbered rule. Litmus's own source is maintained as a literate document, [Litmus, Implemented](doc/implementation.adoc), which also serves as the largest worked example. GitHub displays both as plain asciidoc; `doc/build.sh` renders them with cross-linked excerpts, diagrams, and step-through animations, starting at `doc/build/index.html`.
 
 ## What it looks like
 
-A Litmus document is asciidoc (or Markdown) with one addition: a line that starts with `…` labels a block of code with the file it belongs to, or stands for a named piece of code inside another block.
+A Litmus document is ordinary asciidoc or Markdown with a single addition. A line beginning with `…` either labels the code block that follows with the file it belongs to, or, inside a block, stands for a named excerpt defined elsewhere in the document. The source files themselves contain nothing Litmus-specific.
 
 ````asciidoc
 The program prints a greeting from its main function.
@@ -41,22 +57,23 @@ const std = @import("std");
 ----
 ````
 
-`litmus tangle hello.adoc` writes `hello.zig`, with every piece in its place. Change `hello.zig`, run `litmus untangle hello.adoc`, and the change lands in the right block of the document. The page renders with Asciidoctor, and the pieces link to each other.
+`litmus tangle hello.adoc` assembles `hello.zig` from its excerpts. If `hello.zig` is then edited, `litmus untangle hello.adoc` places each changed, added, or removed line in the block it belongs to, and reports which blocks grew and therefore need prose. The document renders with Asciidoctor, with every excerpt linked to the place it is used.
 
-## What it does
+## Commands at a glance
 
-- **tangle**: documents to source files. A file is written only when it changed, and a file someone edited since the last tangle is never overwritten.
-- **untangle**: changes in the source files back into the documents. It reports every block that grew as _needs prose_, which is the writer's work.
-- **sync** and **watch**: pick the direction by themselves. `watch` runs `sync` whenever a file is saved.
-- **adopt**: a new document from existing code, split into excerpts at its declarations. It understands the shape of Zig and Swift code, and of most brace languages.
-- **companion documents**: a document that explains code without ever writing to it. Code changes flow into the document, and the code is never touched.
-- **check**: proves that the documents and the code agree, and names the first line that does not.
-- **where**: turns a line of a source file, such as the one in a compiler error, into a line of the document.
-- **For agents**: `litmus guide` tells an agent how to work in a Litmus project, `litmus init` wires that into `AGENTS.md` and `CLAUDE.md`, and every command ends with a `next:` line that says what to do next. A Claude Code skill, `litmus-document`, walks an agent from a list of files to a finished document.
+| Command | Purpose |
+|---|---|
+| `tangle` | Write the source files from the documents. A file is rewritten only when its content changes, and a file edited since the last tangle is never overwritten. |
+| `untangle` | Carry edits in the source files back into the documents, and list the blocks that need prose. |
+| `sync`, `watch` | Choose the direction automatically; `watch` does so on every save. |
+| `adopt` | Create a document from existing files, split at their declarations. |
+| `check` | Verify that the documents reproduce the source files, and name the first line that differs. |
+| `where` | Map a line of a source file, such as one in a compiler error, to its line in the document. |
+| `init`, `guide`, `style` | Prepare a project for agents, explain the workflow, and name a document's style file. |
 
 ## Getting started
 
-You need macOS or Linux, `curl` and `python3` for the Zig installer, and Ruby if you want to render documents to HTML.
+Litmus is a single executable with no dependencies beyond the Zig standard library. Building it requires macOS or Linux, with `curl` and `python3` for the Zig installer. Rendering documents to HTML additionally requires Ruby.
 
 ```bash
 git clone https://github.com/YOUR-USER/litmus.git
@@ -65,24 +82,24 @@ scripts/get-zig.sh                                # installs Zig 0.17 into tools
 tools/zig/zig build -Doptimize=ReleaseFast        # builds zig-out/bin/litmus
 ```
 
-Put `zig-out/bin/litmus` on your `PATH`, or call it by its full path. `litmus guide` prints the short guide that agents read, and is a good first look.
+Place `zig-out/bin/litmus` on your `PATH`, or invoke it by its full path. `litmus guide` prints the short guide that agents read, and is a useful first orientation.
 
 ## Using it on your code
 
-The common case: you want to understand one part of a codebase. Make a **companion document**, which reads the code and never writes to it.
+The most common use is to understand one part of an existing codebase. For this, create a **companion document**: it follows the code as the code changes, but never writes to it.
 
-1. **Choose the code.** List the files or folders. For a feature, the files a range of commits touched work well:
+1. **Select the code.** List the relevant files or folders. For a feature, the files touched by a range of commits are a natural choice:
    ```bash
    git diff --name-only abc123..HEAD
    ```
-2. **Make the skeleton.** From your project's root:
+2. **Create the skeleton.** From the project's root:
    ```bash
    litmus adopt -o . --companion docs/payments.adoc Sources/Payments
    litmus check -o . docs/payments.adoc
    ```
-   Paths after the document are relative to `-o`. The new document holds every line of those files, split into named excerpts, and its map is kept beside it in `docs/.litmus/`.
-3. **Write it.** Reorder the excerpt blocks into the order that explains the code, and write prose between them. A block always moves together with its label line, the `… name :file: path` line above it. Run `litmus check` as you go.
-4. **Keep it fresh.** When the code changes, `litmus sync -o . docs/payments.adoc`, or leave `litmus watch -o . docs/payments.adoc` running, carries the change into the document and lists what needs prose.
+   Paths after the document are relative to `-o`. The new document contains every line of the selected files, split into named excerpts, and its map is stored beside it in `docs/.litmus/`.
+3. **Write the explanation.** Reorder the excerpt blocks into the sequence that best explains the code, and write prose between them. A block always moves together with its label, the `… name :file: path` line above it. Run `litmus check` after each change.
+4. **Keep it current.** When the code changes, `litmus sync -o . docs/payments.adoc` carries the change into the document and lists what needs new prose. `litmus watch` does the same continuously.
 
 ### With an agent
 
@@ -90,7 +107,7 @@ The common case: you want to understand one part of a codebase. Make a **compani
 litmus init -o . docs/payments.adoc
 ```
 
-This adds a paragraph to `AGENTS.md` (and creates it if needed), makes `CLAUDE.md` import it, ignores the map in `.gitignore`, and installs the `litmus-document` skill into `.claude/skills/`. Then write a short brief, for example `docs/payments.brief.md`:
+This adds a paragraph to `AGENTS.md`, creating the file if necessary, makes `CLAUDE.md` import it, excludes the map in `.gitignore`, and installs the `litmus-document` skill into `.claude/skills/`. The work is then described in a short brief, for example `docs/payments.brief.md`:
 
 ```markdown
 # Brief: the payments module
@@ -111,24 +128,24 @@ code: .
 kind: companion
 ```
 
-In Claude Code, run `/litmus-document docs/payments.brief.md`. The agent makes the skeleton, proposes an outline of chapters, waits for you to agree, then writes the document in the style of the brief, checking as it goes. The brief is also the document's style file: `litmus style docs/payments.adoc` names it for any agent that writes prose later.
+In Claude Code, run `/litmus-document docs/payments.brief.md`. The agent creates the skeleton, proposes an outline of chapters, and waits for approval before writing the document in the style the brief describes, verifying it after each chapter. The brief also serves as the document's style file, so any agent that later writes prose for it, for example after `untangle` reports new code, follows the same conventions. Other agents follow the same steps from `litmus guide`.
 
 ### Owning the code
 
-A document can also own its code, as Litmus's own book does: the document is the source, and the files are tangled from it. Start with `litmus adopt` without `--companion`, or write the document by hand, and use `tangle`, `untangle`, `sync` and `watch` as you work.
+A document can also own its code, as Litmus's own implementation does. The document is then the primary source and the files are tangled from it, while edits made directly to the files are still carried back by `untangle`. Start with `litmus adopt` without `--companion`, or write the document by hand.
 
 ### Rendering
 
-Documents are asciidoc, so any Asciidoctor setup renders them. For the links between blocks, the small labels, Mermaid diagrams and the table of contents that follows you, add Litmus's extension:
+Documents are standard asciidoc and render with any Asciidoctor installation. Litmus's extension adds links between excerpts and their uses, compact labels, Mermaid diagrams, and a table of contents that follows the reader:
 
 ```bash
 gem install asciidoctor rouge
 asciidoctor -r /path/to/litmus/doc/litmus-weave.rb docs/payments.adoc
 ```
 
-If a document uses the step-through animations from Litmus's `doc/visuals/`, copy that folder next to the HTML.
+Documents that use the step-through animations in `doc/visuals/` need that folder copied next to the generated HTML.
 
-## Commands
+## Command synopsis
 
 ```
 litmus tangle   [-o DIR] [--force] DOCUMENT...
@@ -143,19 +160,19 @@ litmus init     [-o DIR] DOCUMENT...
 litmus guide
 ```
 
-`-o DIR` is where the code lives, the current directory by default. The [spec](doc/litmus.adoc) has every rule.
+`-o DIR` names the directory that holds the code, the current directory by default. The [specification](doc/litmus.adoc) defines each command precisely.
 
-## Status and limits
+## Status and limitations
 
 - Developed and tested on macOS. Linux should work, but is not tested yet. Windows is not a target yet.
-- `watch` polls the files every 200 milliseconds. That is fine for hundreds of files. A native file watcher is planned.
-- `adopt` splits code by its layout: declarations at the left margin, and the members of long types. It suits Zig, Swift and other brace languages. Python and other languages that use indentation for blocks are split less well.
-- Markdown documents work, and are tested, but nothing large has been written in them yet.
-- The rendering extension lives in this repository and is used by path.
+- `watch` polls files every 200 milliseconds, which is adequate for hundreds of files. A native file-system watcher is planned.
+- `adopt` accepts files in any language, and splits them by layout: declarations at the left margin, and the members of long types. The results are best for Zig, Swift, and other brace-delimited languages; languages that delimit blocks by indentation, such as Python, are split more coarsely.
+- Markdown documents are supported and tested, but have not yet been used at scale.
+- The rendering extension is referenced by path from this repository; it is not yet packaged.
 
 ## Working on Litmus
 
-Litmus is developed with Litmus. `doc/implementation.adoc` is the source, and the files in `src/` are tangled from it.
+Litmus is developed with Litmus: `doc/implementation.adoc` is the source, and the files in `src/` are tangled from it. Changes may be made in either place.
 
 ```bash
 tools/zig/zig build test     # unit tests, and a check that the book matches src/
@@ -164,7 +181,7 @@ tools/zig/zig build self     # tangle the book, build Litmus from it, tangle aga
 doc/build.sh                 # render the spec and the book to doc/build/
 ```
 
-`AGENTS.md` has the working rules, and `doc/plan*.md` the plans each part was built from.
+`AGENTS.md` states the working rules, and `doc/plan*.md` the plans from which each part was built.
 
 ## License
 
