@@ -349,7 +349,7 @@ A companion document explains code that it does not own: code someone else wrote
 
 *Rule A6.* An excerpt is named after its first line: the first word that is not a keyword or a modifier, with punctuation after it removed. Keywords and modifiers are words such as `pub`, `fn`, `const`, `var`, `let`, `func`, `struct`, `class`, `actor`, `enum`, `extension`, `protocol`, `init`, `public`, `private`, `fileprivate`, `internal`, `static`, `final`, `override`, `mutating`, `nonisolated`, `export`, `extern`, `inline`, `test`, and attributes such as `@MainActor`. A member is named `Type.member`. A test is named after its string. A name already taken in the file gets a number.
 
-*Rule A7.* Each block opens with a line of hyphens one longer than the longest line of only hyphens in its code, and at least four.
+*Rule A7.* Each block has a source line, `[source,LANG]`, between its label and its opening delimiter. `LANG` comes from the file's extension, or is `text` when the extension is not known, so that the block is never highlighted in a document's default language. The line also keeps a block title added later, such as `.The loop`, apart from the label. The block opens with a line of hyphens one longer than the longest line of only hyphens in its code, and at least four.
 
 *Rule A8.* The document names its style file if `--style` is given (L10), and says `:litmus-companion:` if `--companion` is given (L11). Adopt then writes the map, under `DIR`, or beside the document for a companion (R2), so that untangle, sync and watch work at once.
 

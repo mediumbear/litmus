@@ -185,8 +185,8 @@ fn unique(arena: Allocator, taken: *std.StringHashMapUnmanaged(void), name: []co
     return candidate;
 }
 
-/// The asciidoc language of a file, from its extension, or null.
-fn languageOf(path: []const u8) ?[]const u8 {
+/// The asciidoc language of a file, from its extension, or `text` when it is not known (A7).
+fn languageOf(path: []const u8) []const u8 {
     const ext = std.fs.path.extension(path);
     const table = [_][2][]const u8{
         .{ ".zig", "zig" },  .{ ".swift", "swift" }, .{ ".c", "c" },         .{ ".h", "c" },
@@ -194,9 +194,12 @@ fn languageOf(path: []const u8) ?[]const u8 {
         .{ ".go", "go" },    .{ ".py", "python" },   .{ ".js", "javascript" }, .{ ".ts", "typescript" },
         .{ ".sh", "bash" },  .{ ".rb", "ruby" },     .{ ".java", "java" },   .{ ".kt", "kotlin" },
         .{ ".json", "json" }, .{ ".yml", "yaml" },   .{ ".yaml", "yaml" },   .{ ".toml", "toml" },
+        .{ ".cc", "cpp" },   .{ ".mm", "objc" },     .{ ".cs", "csharp" },   .{ ".lua", "lua" },
+        .{ ".sql", "sql" },  .{ ".html", "html" },   .{ ".css", "css" },     .{ ".xml", "xml" },
+        .{ ".md", "markdown" }, .{ ".adoc", "asciidoc" }, .{ ".tsx", "tsx" }, .{ ".jsx", "jsx" },
     };
     for (table) |entry| if (std.mem.eql(u8, ext, entry[0])) return entry[1];
-    return null;
+    return "text";
 }
 
 /// A7: a line of hyphens one longer than the longest line of only hyphens in the code.
@@ -225,14 +228,14 @@ const Writer = struct {
     }
 
     /// Writes a labeled block (A7).
-    fn block(self: *Writer, name: ?[]const u8, path: []const u8, language: ?[]const u8, lines: []const []const u8) !void {
+    fn block(self: *Writer, name: ?[]const u8, path: []const u8, language: []const u8, lines: []const []const u8) !void {
         if (name) |n| {
             try self.print("{s} {s} :file: {s}\n", .{ ellipsis, n, path });
             self.excerpts += 1;
         } else {
             try self.print("{s} :file: {s}\n", .{ ellipsis, path });
         }
-        if (language) |l| try self.print("[source,{s}]\n", .{l});
+        try self.print("[source,{s}]\n", .{language});
         const delim = try delimiter(self.arena, lines);
         try self.print("{s}\n", .{delim});
         for (lines) |line| try self.print("{s}\n", .{line});
@@ -560,6 +563,19 @@ test "A5: a long type whose body is not indented the same is not split" {
     try src.appendSlice(a, "#if DEBUG\n    var debug = true\n#endif\n}\n");
     const text = try expectRoundTrip(a, &.{.{ .path = "S.swift", .text = src.items }});
     try t.expect(std.mem.indexOf(u8, text, "S.v0") == null);
+}
+
+test "A7: every block has a source line, text when the language is not known" {
+    var arena_state = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const text = try expectRoundTrip(a, &.{
+        .{ .path = "grammar/Hop.g4", .text = "grammar Hop;\n" },
+        .{ .path = "x.zig", .text = "const x = 1;\n" },
+    });
+    try t.expect(std.mem.indexOf(u8, text, ellipsis ++ " :file: grammar/Hop.g4\n[source,text]\n----\n") != null);
+    try t.expect(std.mem.indexOf(u8, text, ellipsis ++ " grammar :file: grammar/Hop.g4\n[source,text]\n") != null);
+    try t.expect(std.mem.indexOf(u8, text, ellipsis ++ " :file: x.zig\n[source,zig]\n") != null);
 }
 
 test "A2: files that cannot go into a document are refused" {

@@ -1657,13 +1657,13 @@ fn unique(arena: Allocator, taken: *std.StringHashMapUnmanaged(void), name: []co
 }
 ----
 
-The language of each block, for the highlighting on the page, comes from the file's extension. The block's delimiter is a line of hyphens one longer than the longest line of only hyphens in the code, so that no line of code can close the block early (A7).
+The language of each block, for the highlighting on the page, comes from the file's extension. Every block gets a source line, and a file whose extension is not in the table gets `[source,text]` (A7). A bare `[source]` would not do: Asciidoctor would then highlight the block in the document's default language, and with no line at all, a block title added later would be read as part of the label above it. The block's delimiter is a line of hyphens one longer than the longest line of only hyphens in the code, so that no line of code can close the block early (A7).
 
 … languageOf :file: adopt.zig
 [source,zig]
 ----
-/// The asciidoc language of a file, from its extension, or null.
-fn languageOf(path: []const u8) ?[]const u8 {
+/// The asciidoc language of a file, from its extension, or `text` when it is not known (A7).
+fn languageOf(path: []const u8) []const u8 {
     const ext = std.fs.path.extension(path);
     const table = [_][2][]const u8{
         .{ ".zig", "zig" },  .{ ".swift", "swift" }, .{ ".c", "c" },         .{ ".h", "c" },
@@ -1671,9 +1671,12 @@ fn languageOf(path: []const u8) ?[]const u8 {
         .{ ".go", "go" },    .{ ".py", "python" },   .{ ".js", "javascript" }, .{ ".ts", "typescript" },
         .{ ".sh", "bash" },  .{ ".rb", "ruby" },     .{ ".java", "java" },   .{ ".kt", "kotlin" },
         .{ ".json", "json" }, .{ ".yml", "yaml" },   .{ ".yaml", "yaml" },   .{ ".toml", "toml" },
+        .{ ".cc", "cpp" },   .{ ".mm", "objc" },     .{ ".cs", "csharp" },   .{ ".lua", "lua" },
+        .{ ".sql", "sql" },  .{ ".html", "html" },   .{ ".css", "css" },     .{ ".xml", "xml" },
+        .{ ".md", "markdown" }, .{ ".adoc", "asciidoc" }, .{ ".tsx", "tsx" }, .{ ".jsx", "jsx" },
     };
     for (table) |entry| if (std.mem.eql(u8, ext, entry[0])) return entry[1];
-    return null;
+    return "text";
 }
 
 /// A7: a line of hyphens one longer than the longest line of only hyphens in the code.
@@ -1712,14 +1715,14 @@ const Writer = struct {
     }
 
     /// Writes a labeled block (A7).
-    fn block(self: *Writer, name: ?[]const u8, path: []const u8, language: ?[]const u8, lines: []const []const u8) !void {
+    fn block(self: *Writer, name: ?[]const u8, path: []const u8, language: []const u8, lines: []const []const u8) !void {
         if (name) |n| {
             try self.print("{s} {s} :file: {s}\n", .{ ellipsis, n, path });
             self.excerpts += 1;
         } else {
             try self.print("{s} :file: {s}\n", .{ ellipsis, path });
         }
-        if (language) |l| try self.print("[source,{s}]\n", .{l});
+        try self.print("[source,{s}]\n", .{language});
         const delim = try delimiter(self.arena, lines);
         try self.print("{s}\n", .{delim});
         for (lines) |line| try self.print("{s}\n", .{line});
@@ -1897,7 +1900,7 @@ pub fn adopt(arena: Allocator, sources: []const Source, options: Options) !Resul
 
 === Tests
 
-The tests adopt, then tangle the new document in memory, and require every file back byte for byte: the property that matters most (A8). They use a Swift file with an enum, a long class with overloads, an operator, `MARK` lines, an extension and an actor, and a Zig file with a long struct and a test. Odd files come next: empty, only blank lines, no blank lines at all, CRLF, lines of hyphens, only comments, leading and trailing blank lines, and two declarations with one name. Then a type that must not be split, the refusals, the header, and names.
+The tests adopt, then tangle the new document in memory, and require every file back byte for byte: the property that matters most (A8). They use a Swift file with an enum, a long class with overloads, an operator, `MARK` lines, an extension and an actor, and a Zig file with a long struct and a test. Odd files come next: empty, only blank lines, no blank lines at all, CRLF, lines of hyphens, only comments, leading and trailing blank lines, and two declarations with one name. Then a type that must not be split, the source line for a language that is not known, the refusals, the header, and names.
 
 … tests :file: adopt.zig
 [source,zig]
@@ -2077,6 +2080,19 @@ test "A5: a long type whose body is not indented the same is not split" {
     try src.appendSlice(a, "#if DEBUG\n    var debug = true\n#endif\n}\n");
     const text = try expectRoundTrip(a, &.{.{ .path = "S.swift", .text = src.items }});
     try t.expect(std.mem.indexOf(u8, text, "S.v0") == null);
+}
+
+test "A7: every block has a source line, text when the language is not known" {
+    var arena_state = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const text = try expectRoundTrip(a, &.{
+        .{ .path = "grammar/Hop.g4", .text = "grammar Hop;\n" },
+        .{ .path = "x.zig", .text = "const x = 1;\n" },
+    });
+    try t.expect(std.mem.indexOf(u8, text, ellipsis ++ " :file: grammar/Hop.g4\n[source,text]\n----\n") != null);
+    try t.expect(std.mem.indexOf(u8, text, ellipsis ++ " grammar :file: grammar/Hop.g4\n[source,text]\n") != null);
+    try t.expect(std.mem.indexOf(u8, text, ellipsis ++ " :file: x.zig\n[source,zig]\n") != null);
 }
 
 test "A2: files that cannot go into a document are refused" {
