@@ -76,7 +76,7 @@ const std = @import("std");
 Litmus is a single executable with no dependencies beyond the Zig standard library. Building it requires macOS or Linux, with `curl` and `python3` for the Zig installer. Rendering documents to HTML additionally requires Ruby.
 
 ```bash
-git clone https://github.com/YOUR-USER/litmus.git
+git clone https://github.com/mediumbear/litmus.git
 cd litmus
 scripts/get-zig.sh                                # installs Zig 0.17 into tools/zig
 tools/zig/zig build -Doptimize=ReleaseFast        # builds zig-out/bin/litmus

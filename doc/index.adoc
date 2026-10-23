@@ -7,4 +7,4 @@ NOTE: Litmus is a work in progress. It is at its best today for documenting a su
 
 * link:litmus.html[The spec]: what Litmus does, rule by rule.
 * link:implementation.html[Litmus, implemented]: Litmus's own source, written as a literate document with Litmus. It is the largest example there is.
-* https://github.com/YOUR-USER/litmus[The source on GitHub], with instructions for using Litmus on your own code.
+* https://github.com/mediumbear/litmus[The source on GitHub], with instructions for using Litmus on your own code.
