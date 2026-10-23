@@ -197,6 +197,7 @@ fn languageOf(path: []const u8) []const u8 {
         .{ ".cc", "cpp" },   .{ ".mm", "objc" },     .{ ".cs", "csharp" },   .{ ".lua", "lua" },
         .{ ".sql", "sql" },  .{ ".html", "html" },   .{ ".css", "css" },     .{ ".xml", "xml" },
         .{ ".md", "markdown" }, .{ ".adoc", "asciidoc" }, .{ ".tsx", "tsx" }, .{ ".jsx", "jsx" },
+        .{ ".g4", "antlr" },
     };
     for (table) |entry| if (std.mem.eql(u8, ext, entry[0])) return entry[1];
     return "text";
@@ -571,10 +572,12 @@ test "A7: every block has a source line, text when the language is not known" {
     const a = arena_state.allocator();
     const text = try expectRoundTrip(a, &.{
         .{ .path = "grammar/Hop.g4", .text = "grammar Hop;\n" },
+        .{ .path = "shaders/cube.metal", .text = "float4 f();\n" },
         .{ .path = "x.zig", .text = "const x = 1;\n" },
     });
-    try t.expect(std.mem.indexOf(u8, text, ellipsis ++ " :file: grammar/Hop.g4\n[source,text]\n----\n") != null);
-    try t.expect(std.mem.indexOf(u8, text, ellipsis ++ " grammar :file: grammar/Hop.g4\n[source,text]\n") != null);
+    try t.expect(std.mem.indexOf(u8, text, ellipsis ++ " :file: grammar/Hop.g4\n[source,antlr]\n----\n") != null);
+    try t.expect(std.mem.indexOf(u8, text, ellipsis ++ " grammar :file: grammar/Hop.g4\n[source,antlr]\n") != null);
+    try t.expect(std.mem.indexOf(u8, text, ellipsis ++ " :file: shaders/cube.metal\n[source,text]\n----\n") != null);
     try t.expect(std.mem.indexOf(u8, text, ellipsis ++ " :file: x.zig\n[source,zig]\n") != null);
 }
 

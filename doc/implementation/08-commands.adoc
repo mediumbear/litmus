@@ -1657,7 +1657,7 @@ fn unique(arena: Allocator, taken: *std.StringHashMapUnmanaged(void), name: []co
 }
 ----
 
-The language of each block, for the highlighting on the page, comes from the file's extension. Every block gets a source line, and a file whose extension is not in the table gets `[source,text]` (A7). A bare `[source]` would not do: Asciidoctor would then highlight the block in the document's default language, and with no line at all, a block title added later would be read as part of the label above it. The block's delimiter is a line of hyphens one longer than the longest line of only hyphens in the code, so that no line of code can close the block early (A7).
+The language of each block, for the highlighting on the page, comes from the file's extension. Every block gets a source line, and a file whose extension is not in the table gets `[source,text]` (A7). The names are the ones Asciidoctor and GitHub use. Rouge, which renders the book, has no lexer for some of them, such as `antlr` for ANTLR grammars; it shows those blocks as plain text, and GitHub still highlights them. A bare `[source]` would not do: Asciidoctor would then highlight the block in the document's default language, and with no line at all, a block title added later would be read as part of the label above it. The block's delimiter is a line of hyphens one longer than the longest line of only hyphens in the code, so that no line of code can close the block early (A7).
 
 … languageOf :file: adopt.zig
 [source,zig]
@@ -1674,6 +1674,7 @@ fn languageOf(path: []const u8) []const u8 {
         .{ ".cc", "cpp" },   .{ ".mm", "objc" },     .{ ".cs", "csharp" },   .{ ".lua", "lua" },
         .{ ".sql", "sql" },  .{ ".html", "html" },   .{ ".css", "css" },     .{ ".xml", "xml" },
         .{ ".md", "markdown" }, .{ ".adoc", "asciidoc" }, .{ ".tsx", "tsx" }, .{ ".jsx", "jsx" },
+        .{ ".g4", "antlr" },
     };
     for (table) |entry| if (std.mem.eql(u8, ext, entry[0])) return entry[1];
     return "text";
@@ -1900,7 +1901,7 @@ pub fn adopt(arena: Allocator, sources: []const Source, options: Options) !Resul
 
 === Tests
 
-The tests adopt, then tangle the new document in memory, and require every file back byte for byte: the property that matters most (A8). They use a Swift file with an enum, a long class with overloads, an operator, `MARK` lines, an extension and an actor, and a Zig file with a long struct and a test. Odd files come next: empty, only blank lines, no blank lines at all, CRLF, lines of hyphens, only comments, leading and trailing blank lines, and two declarations with one name. Then a type that must not be split, the source line for a language that is not known, the refusals, the header, and names.
+The tests adopt, then tangle the new document in memory, and require every file back byte for byte: the property that matters most (A8). They use a Swift file with an enum, a long class with overloads, an operator, `MARK` lines, an extension and an actor, and a Zig file with a long struct and a test. Odd files come next: empty, only blank lines, no blank lines at all, CRLF, lines of hyphens, only comments, leading and trailing blank lines, and two declarations with one name. Then a type that must not be split, the source line for a known language, for one Rouge cannot highlight, and for one that is not known, the refusals, the header, and names.
 
 … tests :file: adopt.zig
 [source,zig]
@@ -2088,10 +2089,12 @@ test "A7: every block has a source line, text when the language is not known" {
     const a = arena_state.allocator();
     const text = try expectRoundTrip(a, &.{
         .{ .path = "grammar/Hop.g4", .text = "grammar Hop;\n" },
+        .{ .path = "shaders/cube.metal", .text = "float4 f();\n" },
         .{ .path = "x.zig", .text = "const x = 1;\n" },
     });
-    try t.expect(std.mem.indexOf(u8, text, ellipsis ++ " :file: grammar/Hop.g4\n[source,text]\n----\n") != null);
-    try t.expect(std.mem.indexOf(u8, text, ellipsis ++ " grammar :file: grammar/Hop.g4\n[source,text]\n") != null);
+    try t.expect(std.mem.indexOf(u8, text, ellipsis ++ " :file: grammar/Hop.g4\n[source,antlr]\n----\n") != null);
+    try t.expect(std.mem.indexOf(u8, text, ellipsis ++ " grammar :file: grammar/Hop.g4\n[source,antlr]\n") != null);
+    try t.expect(std.mem.indexOf(u8, text, ellipsis ++ " :file: shaders/cube.metal\n[source,text]\n----\n") != null);
     try t.expect(std.mem.indexOf(u8, text, ellipsis ++ " :file: x.zig\n[source,zig]\n") != null);
 }
 
