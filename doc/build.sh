@@ -5,8 +5,10 @@ set -e
 cd "$(dirname "$0")"
 ROOT="$(cd .. && pwd)"
 
+# Ruby's own gems stay visible too: since Ruby 4, libraries like logger are gems.
+RUBY_GEMS="$(env -u GEM_HOME -u GEM_PATH gem env gempath)"
 export GEM_HOME="$ROOT/tools/gems"
-export GEM_PATH="$GEM_HOME"
+export GEM_PATH="$GEM_HOME:$RUBY_GEMS"
 export PATH="$GEM_HOME/bin:$PATH"
 
 for g in asciidoctor rouge; do
