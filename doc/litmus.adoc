@@ -214,6 +214,8 @@ Prints, for each document of the set, the style file that applies to it (L10), o
 
 *Rule N1.* Untangle, sync and watch end what they print with a line that starts with `next:` and says what to do next, in words an agent can act on: which prose to write and in which style, what to revert, or that nothing is left to do.
 
+*Rule N2.* A document named on the command line is a path relative to the current directory, or an absolute path. Its `.` and `..` parts are resolved as text, and an absolute path stays absolute.
+
 Document paths are recorded in the map as they were given, so Litmus is run from the same directory each time, normally the project's root.
 
 [[guide]]

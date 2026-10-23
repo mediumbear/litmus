@@ -30,21 +30,28 @@ pub fn formatOf(path: []const u8) ?types.Format {
     return null;
 }
 
-/// Joins `rel` to the directory `dir` and removes `.` and `..` parts.
+/// Joins `rel` to the directory `dir` and removes `.` and `..` parts. An absolute `rel`
+/// stands alone, and an absolute result keeps its leading `/` (N2), with nothing above
+/// the root.
 pub fn joinPath(arena: Allocator, dir: []const u8, rel: []const u8) ![]const u8 {
+    const from_root = std.mem.startsWith(u8, rel, "/");
+    const absolute = from_root or std.mem.startsWith(u8, dir, "/");
     var parts: std.ArrayList([]const u8) = .empty;
-    inline for (.{ dir, rel }) |path| {
+    inline for (.{ if (from_root) "" else dir, rel }) |path| {
         var it = std.mem.splitScalar(u8, path, '/');
         while (it.next()) |part| {
             if (part.len == 0 or std.mem.eql(u8, part, ".")) continue;
             if (std.mem.eql(u8, part, "..") and parts.items.len > 0 and !std.mem.eql(u8, parts.items[parts.items.len - 1], "..")) {
                 _ = parts.pop();
+            } else if (std.mem.eql(u8, part, "..") and absolute) {
+                continue;
             } else {
                 try parts.append(arena, part);
             }
         }
     }
-    return std.mem.join(arena, "/", parts.items);
+    const joined = try std.mem.join(arena, "/", parts.items);
+    return if (absolute) std.mem.concat(arena, u8, &.{ "/", joined }) else joined;
 }
 
 fn dirOf(path: []const u8) []const u8 {
@@ -272,4 +279,10 @@ test "formatOf and joinPath" {
     try t.expectEqualStrings("a/c.adoc", try joinPath(a, "a/b", "../c.adoc"));
     try t.expectEqualStrings("../x", try joinPath(a, "", "../x"));
     try t.expectEqualStrings("x", try joinPath(a, "", "./x"));
+    // N2: an absolute document path stays absolute.
+    try t.expectEqualStrings("/tmp/doc.adoc", try joinPath(a, "", "/tmp/./doc.adoc"));
+    try t.expectEqualStrings("/a/c.adoc", try joinPath(a, "/a/b", "../c.adoc"));
+    try t.expectEqualStrings("/x", try joinPath(a, "", "/../x"));
+    try t.expectEqualStrings("/y.adoc", try joinPath(a, "rel/dir", "/y.adoc"));
+    try t.expectEqualStrings("/", try joinPath(a, "", "/"));
 }
