@@ -23,11 +23,11 @@ Litmus makes the following contributions:
 - **Documents for code that already exists.** `adopt` turns a set of files into a skeleton document, split into named excerpts at their declarations and verified to reproduce the files exactly. An agent then reorders the excerpts into an explanation and writes the prose. _Companion_ documents follow a codebase without ever writing to it, which suits teams that want to understand a feature rather than adopt a new way of working.
 - **Built for agents.** `untangle`, `sync`, `watch` and `adopt` end their output with a `next:` line that states the next action. `litmus guide` explains the workflow to any agent, `litmus init` wires it into `AGENTS.md` and `CLAUDE.md`, and a Claude Code skill takes an agent from a list of files to a finished, rendered document.
 
-The [specification](doc/litmus.adoc) defines every behaviour as a numbered rule. Litmus's own source is maintained as a literate document, [Litmus, Implemented](doc/implementation.adoc), which also serves as the largest worked example. GitHub displays both as plain asciidoc; `doc/build.sh` renders them with cross-linked excerpts, diagrams, and step-through animations, starting at `doc/build/index.html`.
+The [specification](doc/litmus.adoc) defines every behaviour as a numbered rule. Litmus's own source is maintained as a literate document, [Litmus, Implemented](doc/implementation.adoc), which also serves as the largest worked example. GitHub displays both as plain AsciiDoc; `doc/build.sh` renders them with cross-linked excerpts, diagrams, and step-through animations, starting at `doc/build/index.html`.
 
 ## What it looks like
 
-A Litmus document is ordinary asciidoc or Markdown with a single addition. A line beginning with `…` either labels the code block that follows with the file it belongs to, or, inside a block, stands for a named excerpt defined elsewhere in the document. The source files themselves contain nothing Litmus-specific.
+A Litmus document is ordinary AsciiDoc with a single addition. A line beginning with `…` either labels the code block that follows with the file it belongs to, or, inside a block, stands for a named excerpt defined elsewhere in the document. The source files themselves contain nothing Litmus-specific.
 
 ````asciidoc
 The program prints a greeting from its main function.
@@ -136,7 +136,7 @@ A document can also own its code, as Litmus's own implementation does. The docum
 
 ### Rendering
 
-Documents are standard asciidoc and render with any Asciidoctor installation. Litmus's extension adds links between excerpts and their uses, compact labels, Mermaid diagrams, and a table of contents that follows the reader:
+Documents are standard AsciiDoc and render with any Asciidoctor installation. Litmus's extension adds links between excerpts and their uses, compact labels, Mermaid diagrams, and a table of contents that follows the reader:
 
 ```bash
 gem install asciidoctor rouge
@@ -167,7 +167,7 @@ litmus guide
 - Developed and tested on macOS. Linux should work, but is not tested yet. Windows is not a target yet.
 - `watch` polls files every 200 milliseconds, which is adequate for hundreds of files. A native file-system watcher is planned.
 - `adopt` accepts files in any language, and splits them by layout: declarations at the left margin, and the members of long types. The results are best for Zig, Swift, and other brace-delimited languages; languages that delimit blocks by indentation, such as Python, are split more coarsely.
-- Markdown documents are supported and tested, but have not yet been used at scale.
+- AsciiDoc is the primary format. Litmus can also read Markdown documents, and `tangle`, `untangle`, `check`, `sync` and `watch` work on them, but `adopt` creates AsciiDoc only, and the HTML rendering with linked excerpts and diagrams is for AsciiDoc only. A Markdown document displays as ordinary Markdown, on GitHub or elsewhere, with its `…` lines shown as plain text.
 - The rendering extension is referenced by path from this repository; it is not yet packaged.
 
 ## Working on Litmus
