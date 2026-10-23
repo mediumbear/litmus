@@ -189,4 +189,4 @@ doc/build.sh                 # render the spec and the book to doc/build/
 
 ## License
 
-BSD 2-Clause. See [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE).
