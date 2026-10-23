@@ -88,16 +88,17 @@ Place `zig-out/bin/litmus` on your `PATH`, or invoke it by its full path. `litmu
 
 The most common use is to understand one part of an existing codebase. For this, create a **companion document**: it follows the code as the code changes, but never writes to it.
 
-1. **Select the code.** List the relevant files or folders. For a feature, the files touched by a range of commits are a natural choice:
+1. **Select the code.** List the relevant files or folders. For a feature, the files touched by a range of commits are a natural choice. `--diff-filter=d` leaves out files that the range deleted, since they no longer exist to be adopted:
    ```bash
-   git diff --name-only abc123..HEAD
+   git diff --name-only --diff-filter=d abc123..HEAD
    ```
-2. **Create the skeleton.** From the project's root:
+2. **Create the skeleton.** From the project's root, pass the selection to `adopt`, either as a list or straight from git:
    ```bash
-   litmus adopt -o . --companion docs/payments.adoc Sources/Payments
+   litmus adopt -o . --companion docs/payments.adoc Sources/Payments Sources/Shared/Money.swift
+   litmus adopt -o . --companion docs/payments.adoc $(git diff --name-only --diff-filter=d abc123..HEAD)
    litmus check -o . docs/payments.adoc
    ```
-   Paths after the document are relative to `-o`. The new document contains every line of the selected files, split into named excerpts, and its map is stored beside it in `docs/.litmus/`.
+   Paths after the document are relative to `-o`, which is why the command runs from the root, where git's paths start. A folder stands for every file in it. The new document contains every line of the selected files, split into named excerpts, and its map is stored beside it in `docs/.litmus/`. Binary files are skipped with a note, and a file that cannot be placed in a document, such as one without a final newline, is reported and nothing is written.
 3. **Write the explanation.** Reorder the excerpt blocks into the sequence that best explains the code, and write prose between them. A block always moves together with its label, the `… name :file: path` line above it. Run `litmus check` after each change.
 4. **Keep it current.** When the code changes, `litmus sync -o . docs/payments.adoc` carries the change into the document and lists what needs new prose. `litmus watch` does the same continuously.
 
