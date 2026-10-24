@@ -359,6 +359,8 @@ Asciidoctor with a small extension, `doc/litmus-weave.rb`. A document command be
 
 *Rule V1.* If the main document names a style file, the weave reads the `key: value` lines in its `## Settings` section. `mermaid-theme` sets the theme of the diagrams.
 
+*Rule V2.* If the main document sets the attribute `litmus-split`, in its header or with `-a litmus-split`, the weave writes one page per chapter. A chapter is a level-1 section, and a part title goes on the page of the part's first chapter. The main page keeps the title, the table of contents and the preamble; chapter `ID` goes to `NAME-ID.html` beside it, where `NAME` is the main page's name and `ID` is the chapter's id without its leading `_`. Every page has the table of contents and links to the previous and next pages. A link to an anchor on another page points to that page, so links between excerpts, cross references and the table of contents work as on one page. When the output goes to standard output, the weave writes one page.
+
 == Markdown
 
 A document whose name ends in `.md` is read as Markdown. The commands and the rules for tangling are the same. What differs is how blocks are found.

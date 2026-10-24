@@ -147,6 +147,8 @@ gem install asciidoctor rouge
 asciidoctor -r /path/to/litmus/doc/litmus-weave.rb docs/payments.adoc
 ```
 
+A large document can be split into one page per chapter: add `-a litmus-split` to the command, or `:litmus-split:` to the document's header. The main page keeps the title, the table of contents and the preamble, each chapter goes to `NAME-CHAPTER.html` beside it, and links between excerpts, cross references and the table of contents lead across pages.
+
 Documents that use the step-through animations in `doc/visuals/` need that folder copied next to the generated HTML.
 
 ## Command synopsis
