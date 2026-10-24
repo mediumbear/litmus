@@ -6,6 +6,7 @@
 # - The label links back to the command that uses the excerpt.
 # - Characters that Rouge cannot lex are not painted as errors.
 # - Mermaid is loaded when a page has a diagram.
+# - With the attribute `litmus-split`, each chapter gets a page of its own.
 
 require 'asciidoctor'
 require 'asciidoctor/extensions'
@@ -210,10 +211,18 @@ module LitmusWeave
         end
         head + lines.join("\n") + tail
       end
+      theme = (settings(doc)['mermaid-theme'] || 'neutral').gsub(/[^a-z-]/, '')
+      pages = split(doc, output)
+      return finish(output, theme) unless pages
+      outdir = doc.attr('outdir') || File.dirname(doc.attr('outfile'))
+      pages.drop(1).each { |name, html| File.write(File.join(outdir, name), finish(html, theme)) }
+      finish(pages[0][1], theme)
+    end
+
+    def finish(output, theme)
       head = STYLE + SPY
       # Diagrams written as `<pre class="mermaid">` in a passthrough block are drawn in the
       # browser by Mermaid.
-      theme = (settings(doc)['mermaid-theme'] || 'neutral').gsub(/[^a-z-]/, '')
       if output.include?('class="mermaid"')
         head += <<~HTML
           <style>pre.mermaid { background: none; border: none; text-align: center; }</style>
@@ -224,6 +233,83 @@ module LitmusWeave
         HTML
       end
       output.sub('</head>', head + '</head>')
+    end
+
+    PAGES = <<~CSS
+      <style>
+      .lm-pages { display: flex; justify-content: space-between; gap: 1em; margin: 3em 0 1em; padding-top: 1em;
+        border-top: 1px solid #e5e7eb; font-size: .9em; }
+      .lm-pages a { text-decoration: none; }
+      .lm-pages .lm-next { margin-left: auto; text-align: right; }
+      </style>
+    CSS
+
+    # V2: the pages of a split document, as [name, html] pairs with the main page first, or nil
+    # when the document is not split. Each page is the whole document with the content of one
+    # chapter, so the header, the table of contents and the footer are on every page.
+    def split(doc, output)
+      return nil unless doc.attr?('litmus-split') && doc.attr?('outfile')
+      open = output.index('<div id="content">')
+      return nil unless open
+      open += '<div id="content">'.length
+      ends = ['<div id="footnotes">', '<div id="footer">', '</body>'].filter_map { |m| output.index(m, open) }
+      return nil if ends.empty?
+      close = output.rindex('</div>', ends.min)
+      return nil unless close && close >= open
+      body = output[open...close]
+
+      # A chapter starts at its level-1 section, or at the part title before it.
+      starts = []
+      part = nil
+      body.scan(/<h1 id="[^"]*" class="sect0[^"]*">|<div class="sect1">/) do
+        at = $~.begin(0)
+        if $~[0].start_with?('<h1')
+          part ||= at
+        else
+          starts << (part || at)
+          part = nil
+        end
+      end
+      return nil if starts.empty?
+
+      base = File.basename(doc.attr('outfile'), '.*')
+      pages = [{ name: File.basename(doc.attr('outfile')), body: body[0...starts[0]], title: doc.doctitle(sanitize: true) || base }]
+      starts.each_with_index do |at, i|
+        slice = body[at...(starts[i + 1] || body.size)]
+        h2 = slice.match(/<h2 id="([^"]+)"[^>]*>(.*?)<\/h2>/m)
+        id = h2 ? h2[1] : "chapter-#{i + 1}"
+        title = h2 ? CGI.unescapeHTML(h2[2].gsub(/<[^>]+>/, '')).strip : id
+        pages << { name: "#{base}-#{id.sub(/\A_+/, '')}.html", body: slice, title: title }
+      end
+
+      owner = {}
+      pages.each { |page| page[:body].scan(/\sid="([^"]+)"/) { owner[$1] ||= page[:name] } }
+
+      head = output[0...open].sub('</head>', PAGES + '</head>')
+      tail = output[close..]
+      pages.each_with_index.map do |page, i|
+        nav = +''
+        if i > 0
+          prev = pages[i - 1]
+          nav << %(<a class="lm-prev" href="#{prev[:name]}">&#8592; #{CGI.escapeHTML(prev[:title])}</a>)
+        end
+        if (nxt = pages[i + 1])
+          nav << %(<a class="lm-next" href="#{nxt[:name]}">#{CGI.escapeHTML(nxt[:title])} &#8594;</a>)
+        end
+        top = i.zero? ? head : head.sub(/<title>(.*?)<\/title>/m) { "<title>#{CGI.escapeHTML(page[:title])} | #{$1}</title>" }
+        # A page keeps the footnotes it refers to.
+        foot = tail.gsub(/<div class="footnote" id="_footnotedef_(\d+)">.*?<\/div>\n?/m) do |m|
+          page[:body].include?(%(href="#_footnotedef_#{$1}")) ? m : ''
+        end
+        foot = foot.sub(/<div id="footnotes">\s*<hr>\s*<\/div>\n?/, '')
+        html = top + page[:body] + %(<nav class="lm-pages">#{nav}</nav>\n) + foot
+        # A link to an anchor on another page goes to that page.
+        html = html.gsub(/href="#([^"]+)"/) do
+          target = owner[$1]
+          target && target != page[:name] ? %(href="#{target}##{$1}") : $~[0]
+        end
+        [page[:name], html]
+      end
     end
   end
 end
