@@ -203,8 +203,11 @@ Carries the changes in the source files back into the documents, and reports whe
 `litmus sync [-o DIR] DOCUMENT...`::
 Does whichever of tangle and untangle the state of the files and the documents calls for (U7). It exits with 1 if both changed.
 
-`litmus watch [-o DIR] [--interval MS] DOCUMENT...`::
-Runs sync now, and again whenever a file changes. See <<watch>>.
+`litmus watch [-o DIR] [--interval MS] [--live PAGES [--port PORT] [--weave COMMAND]] DOCUMENT...`::
+Runs sync now, and again whenever a file changes. See <<watch>>. With `--live`, it also serves the woven pages, so that a reader can point an agent at a part of them. See <<live>>.
+
+`litmus selection [-o DIR]`::
+Prints what the reader last selected in a live page, once. See <<live>>.
 
 `litmus adopt [-o DIR] [--companion] [--style FILE] DOCUMENT PATH...`::
 Writes a new document that holds the code of existing files. See <<adopt>>.
@@ -317,6 +320,25 @@ placed at a boundary: hello.zig:5 went after "… greet" at hello.adoc:9
 
 Each run is printed as a block: a heading with the seconds since watch started and the files that changed, and then what sync says. Nothing is printed when a look finds no change. Watch runs until it is stopped.
 
+[[live]]
+== Live Pages
+
+A reader of the woven pages often wants to change what they read: rewrite this paragraph, put a diagram above it, split this block into excerpts. Live pages let the reader select the part in the browser and ask an agent about it in their own words. Litmus does not talk to the agent. It serves the pages, writes down what was selected and where it came from, and gives that to the agent when it is asked. For Claude Code, a `UserPromptSubmit` hook that runs `litmus selection` adds the selection to the next prompt.
+
+*Rule E1.* `litmus watch --live PAGES` serves the files in the folder `PAGES` over HTTP at `127.0.0.1`, on port 7357 unless `--port` says otherwise, and prints the address at the start. It listens on no other address, and serves no file outside `PAGES`.
+
+*Rule E2.* With `--weave COMMAND`, watch runs `COMMAND` after each run of sync, with the environment variable `LITMUS_LIVE` set to the absolute path of the current directory. The command is split at spaces and run without a shell, and its output is printed after sync's. The pages in the browser reload when it has finished, or after each run when there is no `--weave`.
+
+*Rule E3.* A live page sends the selection to watch when the reader presses the button that appears beside it. A selection is the document and line where its first block starts, the same for its last block, the selected lines of a code block counted from its first line of code, the titles of the sections it is in, the excerpt and file of a labeled block, and the selected text.
+
+*Rule E4.* Watch writes a selection to `.litmus/selection` under `DIR`, replacing the one before, and prints one line that names it. The file names the document lines the selection covers, from the first line of its first block to the last line of its last block. A block ends at its closing delimiter if it opens with one, at a section title's own line, and otherwise before the next blank line. For a selection inside a code block, the lines are the selected lines of code, and the file also names the excerpt and, from the map, the lines of the tangled file. Then comes the selected text.
+
+*Rule E5.* `litmus selection` prints the selection and deletes it, so that an agent is given each selection once. It prints nothing if there is none, and always exits with 0.
+
+*Rule E6.* In a live page, the file name of a label is a link. Following it asks watch to open the tangled file at the line that the first line of the block became, found in the map. Watch opens only files that are in the map. It runs the command in the environment variable `LITMUS_OPEN`, split at spaces, with `{file}` and `{line}` in it replaced. Without it, the command is `open {file}` on macOS and `xdg-open {file}` elsewhere, which opens the file in the application that the system gives its type, such as Xcode for a `.swift` file. `xed --line {line} {file}` opens Xcode at the line, and `code -g {file}:{line}` opens Visual Studio Code there.
+
+*Rule E7.* Watch takes a selection or a request to open a file only as a `POST` with a JSON body, and refuses one whose `Origin` header names another site than its own address.
+
 [[companion]]
 == Companion Documents
 
@@ -360,6 +382,8 @@ Asciidoctor with a small extension, `doc/litmus-weave.rb`. A document command be
 *Rule V1.* If the main document names a style file, the weave reads the `key: value` lines in its `## Settings` section. `mermaid-theme` sets the theme of the diagrams.
 
 *Rule V2.* If the main document sets the attribute `litmus-split`, in its header or with `-a litmus-split`, the weave writes one page per chapter. A chapter is a level-1 section, and a part title goes on the page of the part's first chapter. The main page keeps the title, the table of contents and the preamble; chapter `ID` goes to `NAME-ID.html` beside it, where `NAME` is the main page's name and `ID` is the chapter's id without its leading `_`. Every page has the table of contents and links to the previous and next pages. A link to an anchor on another page points to that page, so links between excerpts, cross references and the table of contents work as on one page. When the output goes to standard output, the weave writes one page.
+
+*Rule V3.* If the environment variable `LITMUS_LIVE` is set to a directory, the weave makes live pages (E3). It records, for each block, the document it is in, as a path from that directory, and the line where it starts, and it adds the script that sends selections and opens files. Without the variable, the pages hold neither, so that published pages name no paths on the writer's computer.
 
 == Markdown
 

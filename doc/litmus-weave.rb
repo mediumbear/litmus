@@ -6,25 +6,49 @@
 # - The label links back to the command that uses the excerpt.
 # - Characters that Rouge cannot lex are not painted as errors.
 # - Mermaid is loaded when a page has a diagram.
+# - With LITMUS_LIVE set, the pages are live (V3): each block knows where it starts, and a
+#   script sends selections to `litmus watch --live` and opens tangled files.
 # - With the attribute `litmus-split`, each chapter gets a page of its own.
 
 require 'asciidoctor'
 require 'asciidoctor/extensions'
 require 'cgi'
+require 'json'
+require 'pathname'
 
 module LitmusWeave
   ELLIPSIS = "…"
   Label = Struct.new(:name, :file, :executable, :id, :listing)
 
+  # V3: the directory that live pages name documents from, or nil when the pages are not live.
+  def self.live_root
+    root = ENV['LITMUS_LIVE']
+    root && !root.empty? ? root : nil
+  end
+
+  # Line numbers are only kept while parsing when the document asks for them.
+  class Lines < Asciidoctor::Extensions::Preprocessor
+    def process(doc, reader)
+      doc.sourcemap = true if LitmusWeave.live_root
+      reader
+    end
+  end
+
   class Tree < Asciidoctor::Extensions::Treeprocessor
     @@listings = {}
+    @@live = nil
 
     def self.listings
       @@listings
     end
 
+    def self.live
+      @@live
+    end
+
     def process(doc)
       @@listings = {}
+      @@live = nil
       nodes = doc.find_by { |b| b.context == :paragraph || b.context == :listing }
       labels = []
       pending = nil
@@ -57,12 +81,40 @@ module LitmusWeave
 
       labels.each_with_index do |(para, label), n|
         label.listing.add_role("lm-#{n}")
-        @@listings[n] = { file: label.file, first_id: first_id }
+        @@listings[n] = { file: label.file, name: label.name, first_id: first_id }
         parent = para.parent
         index = parent.blocks.index(para)
         parent.blocks[index] = Asciidoctor::Block.new(parent, :pass, source: label_html(label, first_id), content_model: :raw)
       end
+      mark_sources(doc, labels) if LitmusWeave.live_root
       doc
+    end
+
+    # V3: each block that has a wrapper of its own gets a role `lm-at-K`, and the table says
+    # where block K starts: its document, as a path from LITMUS_LIVE, and its line. A labeled
+    # listing also has its excerpt and file.
+    MARKED = %i[paragraph listing literal ulist olist dlist colist table admonition example sidebar quote verse open image section].freeze
+
+    def mark_sources(doc, labels)
+      root = Pathname.new(LitmusWeave.live_root)
+      labeled = {}
+      labels.each { |_, label| labeled[label.listing] = label }
+      paths = []
+      path_index = {}
+      blocks = []
+      doc.find_by { |b| MARKED.include?(b.context) }.each do |block|
+        at = block.source_location
+        next unless at && at.file
+        path = Pathname.new(File.expand_path(at.file)).relative_path_from(root).to_s rescue next
+        index = (path_index[path] ||= (paths << path).size - 1)
+        entry = [index, at.lineno]
+        if (label = labeled[block])
+          entry += [label.name, label.file]
+        end
+        block.add_role("lm-at-#{blocks.size}")
+        blocks << entry
+      end
+      @@live = { paths: paths, blocks: blocks }
     end
 
     def parse_label(node)
@@ -221,6 +273,9 @@ module LitmusWeave
 
     def finish(output, theme)
       head = STYLE + SPY
+      if (table = Tree.live)
+        head += %(<script>window.LITMUS_LIVE = #{JSON.generate(table).gsub('</', '<\\/')};</script>\n) + LIVE
+      end
       # Diagrams written as `<pre class="mermaid">` in a passthrough block are drawn in the
       # browser by Mermaid.
       if output.include?('class="mermaid"')
@@ -234,6 +289,141 @@ module LitmusWeave
       end
       output.sub('</head>', head + '</head>')
     end
+
+    # V3, E3, E6: the script of live pages. It sends what the reader selects to watch, opens a
+    # label's file when its name is clicked, and reloads the page when watch says the pages
+    # were woven again.
+    LIVE = <<~'HTML'
+      <style>
+      #lm-ask { position: absolute; z-index: 30; display: none; font: 12px system-ui, sans-serif; padding: 4px 10px;
+        border: 1px solid #a5b4fc; border-radius: 12px; background: #4f46e5; color: #fff; cursor: pointer;
+        box-shadow: 0 2px 6px rgba(0,0,0,.2); }
+      #lm-toast { position: fixed; bottom: 16px; right: 16px; z-index: 30; max-width: 40em; font: 12px system-ui, sans-serif;
+        padding: 6px 12px; border-radius: 6px; background: #111827; color: #f9fafb; opacity: 0; transition: opacity .3s;
+        pointer-events: none; }
+      #lm-toast.lm-show { opacity: .92; }
+      .litmus-label strong.lm-open { cursor: pointer; text-decoration: underline dotted; }
+      .litmus-label strong.lm-open:hover { color: #1d4ed8; }
+      </style>
+      <script>
+      document.addEventListener('DOMContentLoaded', function () {
+        var live = window.LITMUS_LIVE;
+        if (!live) return;
+        var toast = document.createElement('div');
+        toast.id = 'lm-toast';
+        document.body.appendChild(toast);
+        var hide;
+        function say(text) {
+          toast.textContent = text;
+          toast.classList.add('lm-show');
+          clearTimeout(hide);
+          hide = setTimeout(function () { toast.classList.remove('lm-show'); }, 3500);
+        }
+        function post(path, body) {
+          return fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+            .then(function (r) { return r.text().then(function (t) { return { ok: r.ok, text: t }; }); })
+            .catch(function () { return { ok: false, text: 'litmus watch --live is not running' }; });
+        }
+        function blockOf(node) {
+          var el = node.nodeType === 1 ? node : node.parentElement;
+          while (el && el !== document.body) {
+            var m = el.className && typeof el.className === 'string' && el.className.match(/\blm-at-(\d+)\b/);
+            if (m) return { el: el, k: +m[1] };
+            el = el.parentElement;
+          }
+          return null;
+        }
+        function sections(el) {
+          var titles = [];
+          for (var s = el.closest('[class^="sect"]'); s; s = s.parentElement && s.parentElement.closest('[class^="sect"]')) {
+            var h = s.querySelector(':scope > h1, :scope > h2, :scope > h3, :scope > h4, :scope > h5, :scope > h6');
+            if (h) titles.unshift(h.textContent.trim());
+          }
+          return titles;
+        }
+        // The line of a point in a code block, counted from its first line of code.
+        function codeLine(pre, container, offset) {
+          var r = document.createRange();
+          r.setStart(pre, 0);
+          r.setEnd(container, offset);
+          return (r.toString().match(/\n/g) || []).length;
+        }
+        function selection() {
+          var sel = window.getSelection();
+          if (!sel || sel.isCollapsed || !sel.rangeCount) return null;
+          var range = sel.getRangeAt(0);
+          var first = blockOf(range.startContainer), last = blockOf(range.endContainer);
+          if (!first || !last) return null;
+          var a = live.blocks[first.k], b = live.blocks[last.k];
+          var s = { doc: live.paths[a[0]], line: a[1], last_doc: live.paths[b[0]], last_line: b[1],
+            sections: sections(first.el), text: sel.toString() };
+          var pre = first.k === last.k && first.el.querySelector('pre');
+          if (pre && pre.contains(range.startContainer) && pre.contains(range.endContainer)) {
+            s.code_first = codeLine(pre, range.startContainer, range.startOffset);
+            s.code_last = codeLine(pre, range.endContainer, range.endOffset);
+            if (s.code_last > s.code_first && /\n$/.test(s.text)) s.code_last -= 1;
+            if (a[2]) s.excerpt = a[2];
+            if (a[3]) s.file = a[3];
+          }
+          return s;
+        }
+        var ask = document.createElement('button');
+        ask.id = 'lm-ask';
+        ask.type = 'button';
+        ask.textContent = 'Send to agent';
+        ask.title = 'Write this selection to .litmus/selection, for the next prompt';
+        document.body.appendChild(ask);
+        var pending = null;
+        ask.addEventListener('mousedown', function (e) { e.preventDefault(); });
+        ask.addEventListener('click', function () {
+          if (!pending) return;
+          post('/litmus/selection', pending).then(function (r) { say(r.ok ? 'Sent: ' + r.text : r.text); });
+          ask.style.display = 'none';
+        });
+        document.addEventListener('mouseup', function () {
+          setTimeout(function () {
+            pending = selection();
+            if (!pending) { ask.style.display = 'none'; return; }
+            var rects = window.getSelection().getRangeAt(0).getClientRects();
+            var r = rects[rects.length - 1];
+            ask.style.left = (r.right + window.scrollX + 6) + 'px';
+            ask.style.top = (r.bottom + window.scrollY + 4) + 'px';
+            ask.style.display = 'block';
+          }, 0);
+        });
+        // E6: the file name of a label opens the tangled file at the block's first line.
+        document.querySelectorAll('.litmus-label strong').forEach(function (strong) {
+          // The block is the label's next sibling that has a line of its own; its parents,
+          // such as the section, have lines too, so blockOf would find those.
+          var next = strong.closest('.litmus-label').nextElementSibling, m = null;
+          while (next && !(m = (next.className || '').match(/\blm-at-(\d+)\b/))) next = next.nextElementSibling;
+          if (!m) return;
+          var at = live.blocks[+m[1]];
+          strong.classList.add('lm-open');
+          strong.title = 'Open the tangled file here';
+          strong.addEventListener('click', function () {
+            post('/litmus/open', { doc: live.paths[at[0]], line: at[1] }).then(function (r) { say(r.ok ? 'Opened ' + r.text : r.text); });
+          });
+        });
+        // E2: reload when the pages were woven again, and keep the place.
+        var key = 'lm-scroll:' + location.pathname;
+        try {
+          var y = sessionStorage.getItem(key);
+          if (y !== null) { sessionStorage.removeItem(key); window.scrollTo(0, +y); }
+        } catch (e) {}
+        var version = null;
+        setInterval(function () {
+          fetch('/litmus/version', { cache: 'no-store' }).then(function (r) { return r.text(); }).then(function (v) {
+            if (version === null) version = v;
+            else if (v !== version) {
+              try { sessionStorage.setItem(key, String(window.scrollY)); } catch (e) {}
+              location.reload();
+            }
+          }).catch(function () {});
+        }, 1000);
+      });
+      </script>
+    HTML
 
     PAGES = <<~CSS
       <style>
@@ -315,6 +505,7 @@ module LitmusWeave
 end
 
 Asciidoctor::Extensions.register do
+  preprocessor LitmusWeave::Lines
   treeprocessor LitmusWeave::Tree
   postprocessor LitmusWeave::Post
 end

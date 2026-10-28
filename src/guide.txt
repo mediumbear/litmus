@@ -11,6 +11,10 @@ Finding your way
 - A document labels each block of code with the file it lands in:
   `… name :file: path` for an excerpt, `… :file: path` for the start of a file.
   Inside a block, a line `… name` inserts that excerpt, at that indent.
+- If `litmus watch --live` is running, the reader can select part of the woven
+  pages and send it. `litmus selection` prints it once, and a hook may already
+  have added it to the prompt. When the user says "this", they mean the
+  selection: its Where: line names the document lines to change.
 
 Changing code
 1. Edit the tangled file and test it as usual.
