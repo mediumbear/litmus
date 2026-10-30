@@ -1,0 +1,8 @@
+docs/template.adoc:5: S3: the block report of Sources/Counter.swift is placed twice
+docs/template.adoc:7: S3: the skeleton has no block missing of Sources/Counter.swift
+docs/counter.adoc:11: S3: the block (file root) of Sources/Counter.swift is not placed, and the template has no … :rest:
+docs/counter.adoc:23: S3: the block Foundation of Sources/Counter.swift is not placed, and the template has no … :rest:
+docs/counter.adoc:31: S3: the block Counter of Sources/Counter.swift is not placed, and the template has no … :rest:
+docs/counter.adoc:58: S3: the block (file root) of Sources/Old.swift is not placed, and the template has no … :rest:
+docs/counter.adoc:64: S3: the block unchanged of Sources/Old.swift is not placed, and the template has no … :rest:
+next: fix the placeholders above in docs/template.adoc and run assemble again; nothing was written

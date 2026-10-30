@@ -1,0 +1,13 @@
+= Counting by steps
+
+The counter now counts in steps of two.
+
+… Counter :file: Counter.swift
+
+The report no longer prints:
+
+… report :file: Counter.swift
+
+== The rest of the files
+
+… :rest:

@@ -1,0 +1,1 @@
+litmus assemble docs/counter.adoc docs/template.adoc docs/review.adoc && litmus check -o code docs/review.adoc

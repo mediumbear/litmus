@@ -1,0 +1,9 @@
+litmus map 1
+file	Sources/Counter.swift	20b237334f5fcbd0c274ac4a74d11e0310569345a405cb669967712b3545043d
+1	1	docs/counter.adoc	26	0	Foundation
+2	3	docs/counter.adoc	15	0	:file:
+5	12	docs/counter.adoc	34	0	Counter
+17	1	docs/counter.adoc	19	0	:file:
+18	3	docs/counter.adoc	51	0	report
+file	Sources/Old.swift	40510318dc6690c461d2c010162d1eaf386b35639f7df816f4af3d0ef0bb6753
+1	1	docs/counter.adoc	67	0	unchanged

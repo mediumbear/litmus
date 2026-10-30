@@ -1,0 +1,7 @@
+= Broken
+
+… report :file: Counter.swift
+
+… report :file: Sources/Counter.swift
+
+… missing :file: Counter.swift

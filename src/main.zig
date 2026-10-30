@@ -14,6 +14,7 @@ const sync = @import("sync.zig");
 const watch = @import("watch.zig");
 const adopt = @import("adopt.zig");
 const marks = @import("marks.zig");
+const assemble = @import("assemble.zig");
 
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
@@ -29,6 +30,7 @@ const usage =
     \\       litmus watch [-o DIR] [--interval MS] DOCUMENT...
     \\       litmus style DOCUMENT...
     \\       litmus blocks [--changed] DOCUMENT...
+    \\       litmus assemble SKELETON TEMPLATE OUTPUT
     \\       litmus adopt [-o DIR] [--companion] [--style FILE] [--diff FILE] DOCUMENT PATH...
     \\
 ;
@@ -828,6 +830,75 @@ fn blocksCommand(ctx: Context, args: []const []const u8) !u8 {
     return 0;
 }
 
+/// S1 to S4: the output from the skeleton's blocks and the template's prose.
+fn assembleCommand(ctx: Context, args: []const []const u8) !u8 {
+    const options = (try parseOptions(ctx, args, .{})) orelse return 2;
+    if (options.positional.len != 3) {
+        try ctx.err.writeAll(usage);
+        return 2;
+    }
+    const skeleton, const template, const output_path = options.positional[0..3].*;
+    for (options.positional) |path| if (docset.formatOf(path) != .asciidoc) {
+        try ctx.err.print("litmus: assemble reads and writes asciidoc, so {s} must end in .adoc\n", .{path});
+        return 2;
+    };
+    const target = try docset.joinPath(ctx.arena, "", output_path);
+    if (std.mem.eql(u8, target, try docset.joinPath(ctx.arena, "", skeleton)) or std.mem.eql(u8, target, try docset.joinPath(ctx.arena, "", template))) {
+        try ctx.err.print("{s}: is the skeleton or the template, which assemble never overwrites (S4)\n", .{output_path});
+        return 1;
+    }
+
+    // The skeleton must be a whole, checked document set.
+    var diags = types.Diagnostics.init(ctx.arena);
+    var fs: DiskFs = .{ .io = ctx.io };
+    const set = try docset.load(ctx.arena, &fs, &.{skeleton}, &diags);
+    if (diags.list.items.len == 0) {
+        const resolved = try resolve.resolve(ctx.arena, set.docs, set.blocks, &diags);
+        if (diags.list.items.len == 0) {
+            const files = try tangle.tangleAll(ctx.arena, resolved);
+            return assembleWith(ctx, set, files, template, output_path);
+        }
+    }
+    try printDiagnostics(ctx, &diags, set.docs);
+    return 1;
+}
+
+fn assembleWith(ctx: Context, set: docset.Set, files: []const tangle.Tangled, template: []const u8, output_path: []const u8) !u8 {
+    const cwd = Io.Dir.cwd();
+    const template_text = cwd.readFileAlloc(ctx.io, template, ctx.arena, .limited(1 << 30)) catch |e| {
+        try ctx.err.print("{s}: {s}\n", .{ template, @errorName(e) });
+        return 1;
+    };
+    const template_lines = try @import("scan.zig").splitLines(ctx.arena, template_text);
+    const result = try assemble.assemble(ctx.arena, set.docs, set.blocks, template_lines);
+    for (result.problems) |p| {
+        try ctx.err.print("{s}:{d}: {s}\n", .{ if (p.in_skeleton) set.docs[0].path else template, p.line, p.message });
+    }
+    if (result.problems.len > 0) {
+        try next(ctx, "fix the placeholders above in {s} and run assemble again; nothing was written", .{template});
+        return 1;
+    }
+
+    // S4: the output must tangle to the skeleton's files.
+    const out_doc: types.Document = .{
+        .path = output_path,
+        .format = .asciidoc,
+        .lines = try @import("scan.zig").splitLines(ctx.arena, result.text),
+        .dir = std.fs.path.dirname(output_path) orelse "",
+    };
+    var wanted: std.ArrayList(untangle.FileText) = .empty;
+    for (files) |file| try wanted.append(ctx.arena, .{ .path = file.path, .text = file.text });
+    if (try untangle.verify(ctx.arena, &.{out_doc}, &.{output_path}, wanted.items)) |message| {
+        try ctx.err.print("{s}; nothing was written\n", .{message});
+        try next(ctx, "the template's own labeled blocks change the code: make them illustrations, without a label", .{});
+        return 1;
+    }
+    try output.writeAtomic(ctx.io, cwd, output_path, result.text, false);
+    try ctx.out.print("wrote {s}: {d} {s} placed, {d} in the rest\n", .{ output_path, result.placed, if (result.placed == 1) "block" else "blocks", result.rest });
+    try next(ctx, "run litmus check on {s} with the skeleton's -o, then render it", .{output_path});
+    return 0;
+}
+
 fn initCommand(ctx: Context, exe: []const u8, args: []const []const u8) !u8 {
     const options = (try parseOptions(ctx, args, .{})) orelse return 2;
     if (!try documentsOk(ctx, options.positional)) return 2;
@@ -866,6 +937,7 @@ pub fn main(init: std.process.Init) !u8 {
         if (std.mem.eql(u8, command, "style")) break :run styleCommand(ctx, rest);
         if (std.mem.eql(u8, command, "adopt")) break :run adoptCommand(ctx, rest);
         if (std.mem.eql(u8, command, "blocks")) break :run blocksCommand(ctx, rest);
+        if (std.mem.eql(u8, command, "assemble")) break :run assembleCommand(ctx, rest);
         if (std.mem.eql(u8, command, "guide")) {
             try out.writeAll(guide_text);
             break :run 0;

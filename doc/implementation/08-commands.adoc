@@ -37,7 +37,10 @@ Prints the style file that applies to each document.
 `litmus blocks [--changed] DOCUMENT...`::
 Lists the labeled blocks of the documents, one line each.
 
-`main.zig` reads the command line and runs the right command. `compare.zig` is the comparison that `check` makes, `marks.zig` reads a diff for adopt, and `init.zig` is init. The text of the guide is a file of its own, which the program carries inside it.
+`litmus assemble SKELETON TEMPLATE OUTPUT`::
+Writes a document from a template of prose and the blocks of a skeleton.
+
+`main.zig` reads the command line and runs the right command. `compare.zig` is the comparison that `check` makes, `marks.zig` reads a diff for adopt, `assemble.zig` makes a document from a template, and `init.zig` is init. The text of the guide is a file of its own, which the program carries inside it.
 
 === The command line
 
@@ -94,12 +97,16 @@ Lists the labeled blocks of the documents, one line each.
 
 … blocksCommand
 
+… assembleCommand
+
+… assembleWith
+
 … initCommand
 
 … main
 ----
 
-The file imports every stage, since it is where they meet. Untangle, sync, watch, adopt and the marks of a diff come last.
+The file imports every stage, since it is where they meet. Untangle, sync, watch, adopt, the marks of a diff and assemble come last.
 
 … header :file: main.zig
 [source,zig]
@@ -120,6 +127,7 @@ const sync = @import("sync.zig");
 const watch = @import("watch.zig");
 const adopt = @import("adopt.zig");
 const marks = @import("marks.zig");
+const assemble = @import("assemble.zig");
 
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
@@ -141,6 +149,7 @@ const usage =
     \\       litmus watch [-o DIR] [--interval MS] DOCUMENT...
     \\       litmus style DOCUMENT...
     \\       litmus blocks [--changed] DOCUMENT...
+    \\       litmus assemble SKELETON TEMPLATE OUTPUT
     \\       litmus adopt [-o DIR] [--companion] [--style FILE] [--diff FILE] DOCUMENT PATH...
     \\
 ;
@@ -2678,6 +2687,584 @@ test "A9: ranges" {
 ----
 
 
+
+=== Assembling a document
+
+Writing a document by moving the blocks of a skeleton is slow, and easy to get wrong: a block lost, or copied with a line changed. `assemble` lets the writer write only prose, with a line where each block goes, and copies the blocks from the skeleton exactly (S1 to S4). It is the cheap way for an agent to write a document: it writes the prose and the placeholders, and never writes code out again.
+
+The command takes three documents. It refuses to write over the skeleton or the template, which it compares as paths, and the skeleton must load, resolve and tangle like any document set, since its files are what the output must give back.
+
+… assembleCommand :file: main.zig
+[source,zig]
+----
+/// S1 to S4: the output from the skeleton's blocks and the template's prose.
+fn assembleCommand(ctx: Context, args: []const []const u8) !u8 {
+    const options = (try parseOptions(ctx, args, .{})) orelse return 2;
+    if (options.positional.len != 3) {
+        try ctx.err.writeAll(usage);
+        return 2;
+    }
+    const skeleton, const template, const output_path = options.positional[0..3].*;
+    for (options.positional) |path| if (docset.formatOf(path) != .asciidoc) {
+        try ctx.err.print("litmus: assemble reads and writes asciidoc, so {s} must end in .adoc\n", .{path});
+        return 2;
+    };
+    const target = try docset.joinPath(ctx.arena, "", output_path);
+    if (std.mem.eql(u8, target, try docset.joinPath(ctx.arena, "", skeleton)) or std.mem.eql(u8, target, try docset.joinPath(ctx.arena, "", template))) {
+        try ctx.err.print("{s}: is the skeleton or the template, which assemble never overwrites (S4)\n", .{output_path});
+        return 1;
+    }
+
+    // The skeleton must be a whole, checked document set.
+    var diags = types.Diagnostics.init(ctx.arena);
+    var fs: DiskFs = .{ .io = ctx.io };
+    const set = try docset.load(ctx.arena, &fs, &.{skeleton}, &diags);
+    if (diags.list.items.len == 0) {
+        const resolved = try resolve.resolve(ctx.arena, set.docs, set.blocks, &diags);
+        if (diags.list.items.len == 0) {
+            const files = try tangle.tangleAll(ctx.arena, resolved);
+            return assembleWith(ctx, set, files, template, output_path);
+        }
+    }
+    try printDiagnostics(ctx, &diags, set.docs);
+    return 1;
+}
+----
+
+The output is made by `assemble.zig`. Every problem is printed, with the document it is in. Then the output is checked as adopt's is: tangled in memory, it must give the skeleton's files back byte for byte (S4). The only way it can fail is a label of the template's own that changes the code, and the next line says so.
+
+… assembleWith :file: main.zig
+[source,zig]
+----
+fn assembleWith(ctx: Context, set: docset.Set, files: []const tangle.Tangled, template: []const u8, output_path: []const u8) !u8 {
+    const cwd = Io.Dir.cwd();
+    const template_text = cwd.readFileAlloc(ctx.io, template, ctx.arena, .limited(1 << 30)) catch |e| {
+        try ctx.err.print("{s}: {s}\n", .{ template, @errorName(e) });
+        return 1;
+    };
+    const template_lines = try @import("scan.zig").splitLines(ctx.arena, template_text);
+    const result = try assemble.assemble(ctx.arena, set.docs, set.blocks, template_lines);
+    for (result.problems) |p| {
+        try ctx.err.print("{s}:{d}: {s}\n", .{ if (p.in_skeleton) set.docs[0].path else template, p.line, p.message });
+    }
+    if (result.problems.len > 0) {
+        try next(ctx, "fix the placeholders above in {s} and run assemble again; nothing was written", .{template});
+        return 1;
+    }
+
+    // S4: the output must tangle to the skeleton's files.
+    const out_doc: types.Document = .{
+        .path = output_path,
+        .format = .asciidoc,
+        .lines = try @import("scan.zig").splitLines(ctx.arena, result.text),
+        .dir = std.fs.path.dirname(output_path) orelse "",
+    };
+    var wanted: std.ArrayList(untangle.FileText) = .empty;
+    for (files) |file| try wanted.append(ctx.arena, .{ .path = file.path, .text = file.text });
+    if (try untangle.verify(ctx.arena, &.{out_doc}, &.{output_path}, wanted.items)) |message| {
+        try ctx.err.print("{s}; nothing was written\n", .{message});
+        try next(ctx, "the template's own labeled blocks change the code: make them illustrations, without a label", .{});
+        return 1;
+    }
+    try output.writeAtomic(ctx.io, cwd, output_path, result.text, false);
+    try ctx.out.print("wrote {s}: {d} {s} placed, {d} in the rest\n", .{ output_path, result.placed, if (result.placed == 1) "block" else "blocks", result.rest });
+    try next(ctx, "run litmus check on {s} with the skeleton's -o, then render it", .{output_path});
+    return 0;
+}
+----
+
+`assemble.zig` is pure, like `adopt.zig`: it gets the skeleton's set, already loaded and checked, and the template's lines, and returns the text of the output, or the problems.
+
+… :file: assemble.zig
+[source,zig]
+----
+… assemble header
+
+… assemble results
+
+… entries
+
+… span
+
+… placeholder
+
+… sameName
+
+… headerEntries
+
+… assemble
+
+… assemble tests
+----
+
+It needs the scanner, to tell a placeholder from a label that has a block of its own.
+
+… assemble header :file: assemble.zig
+[source,zig]
+----
+//! `litmus assemble` (S1 to S4): a document from a template of prose, with each block of a
+//! skeleton copied to where the template's placeholder for it is. No IO.
+
+const std = @import("std");
+const types = @import("types.zig");
+const scan = @import("scan.zig");
+
+const Allocator = std.mem.Allocator;
+const Block = types.Block;
+----
+
+Problems are gathered rather than returned at the first, so that one run lists every placeholder to fix. Most are at a line of the template; a block left over is at its line in the skeleton.
+
+… assemble results :file: assemble.zig
+[source,zig]
+----
+/// A problem, at a line of the template, or of the skeleton when `in_skeleton`.
+pub const Problem = struct { in_skeleton: bool = false, line: u32, message: []const u8 };
+
+pub const Result = struct {
+    /// The text of the output, or empty if there is any problem.
+    text: []const u8,
+    problems: []const Problem,
+    /// How many blocks placeholders placed, and how many `… :rest:` placed.
+    placed: u32 = 0,
+    rest: u32 = 0,
+};
+----
+
+The skeleton's blocks are grouped by file and name. A name can have several blocks (an excerpt is all its blocks, joined), and one placeholder places them all (S3).
+
+… entries :file: assemble.zig
+[source,zig]
+----
+/// The blocks of the skeleton with one name and file, and whether a placeholder used them.
+const Entry = struct {
+    file: []const u8,
+    name: ?[]const u8,
+    blocks: std.ArrayList(*const Block) = .empty,
+    used: bool = false,
+};
+----
+
+A block is copied from its label to its closing delimiter: the label, the attribute and title lines, and the code. `first_line` is the document line of the first line of code, so the closing delimiter is `lines.len` lines after it. The lines are slices of the skeleton's text, so nothing is copied until the output is written.
+
+… span :file: assemble.zig
+[source,zig]
+----
+/// The lines of a block in its document, from its label to its closing delimiter.
+fn span(docs: []const types.Document, block: *const Block) []const []const u8 {
+    const lines = docs[block.label.doc].lines;
+    const close = block.first_line - 1 + block.lines.len;
+    return lines[block.label.line - 1 .. close + 1];
+}
+----
+
+A placeholder is a label like any other, `… name :file: path` or `… :file: path`. An `:executable:` at the end is allowed, and ignored, since the block brings its own label.
+
+… placeholder :file: assemble.zig
+[source,zig]
+----
+/// The name and path of a placeholder's command text, or null without `:file:`.
+fn placeholder(text: []const u8) ?struct { name: ?[]const u8, path: []const u8 } {
+    var rest: []const u8 = undefined;
+    var name: ?[]const u8 = null;
+    if (std.mem.startsWith(u8, text, ":file: ")) {
+        rest = text[":file: ".len..];
+    } else if (std.mem.indexOf(u8, text, " :file: ")) |at| {
+        name = std.mem.trim(u8, text[0..at], " \t");
+        rest = text[at + " :file: ".len ..];
+    } else return null;
+    rest = std.mem.trim(u8, rest, " \t\r");
+    if (std.mem.endsWith(u8, rest, ":executable:")) rest = std.mem.trimEnd(u8, rest[0 .. rest.len - ":executable:".len], " \t");
+    return .{ .name = name, .path = rest };
+}
+----
+
+Two names are the same when both are null, for file roots, or both are equal.
+
+… sameName :file: assemble.zig
+[source,zig]
+----
+fn sameName(a: ?[]const u8, b: ?[]const u8) bool {
+    if (a == null or b == null) return a == null and b == null;
+    return std.mem.eql(u8, a.?, b.?);
+}
+----
+
+The entries that S4 carries from the skeleton to the output are the companion mark and the style file, which say how the document is to be used and written. They come before the first document command (C8).
+
+… headerEntries :file: assemble.zig
+[source,zig]
+----
+/// The header entries of the skeleton that S4 carries over: `:litmus-style:` and
+/// `:litmus-companion:` lines before its first document command.
+fn headerEntries(arena: Allocator, lines: []const []const u8) ![]const []const u8 {
+    var result: std.ArrayList([]const u8) = .empty;
+    for (lines) |line| {
+        if (scan.commandOf(line) != null) break;
+        if (std.mem.startsWith(u8, line, ":litmus-style:") or std.mem.startsWith(u8, line, ":litmus-companion:")) try result.append(arena, line);
+    }
+    return result.items;
+}
+----
+
+`assemble` goes through the template once. A placeholder's blocks go into the output where it is. The rest are put where `… :rest:` was, once the whole template is read, since only then is it known which blocks are left. Then the header entries are added, and the lines are joined.
+
+… assemble :file: assemble.zig
+[source,zig]
+----
+/// S1 to S4: the output for the skeleton's set (its documents and blocks) and the template.
+pub fn assemble(arena: Allocator, docs: []const types.Document, blocks: []const Block, template: []const []const u8) !Result {
+    var problems: std.ArrayList(Problem) = .empty;
+
+    … assemble, the entries
+
+    … assemble, the placeholders
+
+    … assemble, the rest
+    if (problems.items.len > 0) return .{ .text = "", .problems = problems.items };
+    if (rest_at) |at| {
+        // A blank line after the rest would double the one the template has.
+        if (rest.items.len > 0) rest.items.len -= 1;
+        try out.insertSlice(arena, at, rest.items);
+    }
+
+    // S4: the skeleton's header entries, after the title, unless the template has its own.
+    const own = try headerEntries(arena, template);
+    if (own.len == 0 and docs.len > 0) {
+        const entries_of_skeleton = try headerEntries(arena, docs[0].lines);
+        const at: usize = if (out.items.len > 0 and std.mem.startsWith(u8, out.items[0], "= ")) 1 else 0;
+        try out.insertSlice(arena, at, entries_of_skeleton);
+    }
+
+    var text: std.ArrayList(u8) = .empty;
+    for (out.items) |line| {
+        try text.appendSlice(arena, line);
+        try text.append(arena, '\n');
+    }
+    return .{ .text = text.items, .problems = &.{}, .placed = placed, .rest = rest_count };
+}
+----
+
+First, the entries, and the files in the order the skeleton has them, which is the order of the rest.
+
+… assemble, the entries :file: assemble.zig
+[source,zig]
+----
+// The skeleton's blocks, by file and name, in the order they first appear.
+var entries: std.ArrayList(Entry) = .empty;
+var files: std.ArrayList([]const u8) = .empty;
+for (blocks) |*block| {
+    const entry = for (entries.items) |*e| {
+        if (std.mem.eql(u8, e.file, block.label.file) and sameName(e.name, block.label.name)) break e;
+    } else blk: {
+        try entries.append(arena, .{ .file = block.label.file, .name = block.label.name });
+        break :blk &entries.items[entries.items.len - 1];
+    };
+    try entry.blocks.append(arena, block);
+    for (files.items) |f| {
+        if (std.mem.eql(u8, f, block.label.file)) break;
+    } else try files.append(arena, block.label.file);
+}
+----
+
+Each line of the template is classified by the scanner, so that commands inside listings, comments and passthrough blocks are left alone (L5). A document command is a placeholder unless a block follows it after any attribute and title lines. To look ahead without losing its place, a copy of the scanner reads the lines that follow. A placeholder's path is matched exactly first, and otherwise by its end after a `/`, which must fit one file only: skeletons have long paths, and a writer should not need to spell them out.
+
+… assemble, the placeholders :file: assemble.zig
+[source,zig]
+----
+// S1: the template, line by line, with each placeholder replaced. `rest_at` is where the
+// rest goes, as an index into `out`.
+var out: std.ArrayList([]const u8) = .empty;
+var rest_at: ?usize = null;
+var placed: u32 = 0;
+var scanner = scan.Scanner.init(.asciidoc);
+for (template, 1..) |line, n| {
+    const line_no: u32 = @intCast(n);
+    if (scanner.next(line) != .command) {
+        try out.append(arena, line);
+        continue;
+    }
+    const text = std.mem.trim(u8, scan.commandOf(line).?.text, " \t\r");
+    if (std.mem.eql(u8, text, ":rest:")) {
+        if (rest_at != null) {
+            try problems.append(arena, .{ .line = line_no, .message = "S3: a second … :rest:" });
+        } else rest_at = out.items.len;
+        continue;
+    }
+    // A label that a block follows is the template's own, and stays as it is.
+    var look = scanner;
+    var follows: scan.Kind = .prose;
+    for (template[n..]) |next_line| {
+        follows = look.next(next_line);
+        if (follows != .attribute and follows != .title) break;
+    }
+    if (follows == .open) {
+        try out.append(arena, line);
+        continue;
+    }
+
+    const p = placeholder(text) orelse {
+        try problems.append(arena, .{ .line = line_no, .message = try std.fmt.allocPrint(arena, "S3: a placeholder needs :file:, as in … NAME :file: PATH: {s}", .{text}) });
+        continue;
+    };
+    // The path, or the end of exactly one file's path.
+    var file: ?[]const u8 = null;
+    var matches: u32 = 0;
+    for (files.items) |f| {
+        if (std.mem.eql(u8, f, p.path)) {
+            file = f;
+            matches = 1;
+            break;
+        }
+        if (f.len > p.path.len and std.mem.endsWith(u8, f, p.path) and f[f.len - p.path.len - 1] == '/') {
+            file = f;
+            matches += 1;
+        }
+    }
+    if (matches == 0) {
+        try problems.append(arena, .{ .line = line_no, .message = try std.fmt.allocPrint(arena, "S3: no file of the skeleton is or ends with {s}", .{p.path}) });
+        continue;
+    }
+    if (matches > 1) {
+        try problems.append(arena, .{ .line = line_no, .message = try std.fmt.allocPrint(arena, "S3: more than one file of the skeleton ends with {s}; write more of its path", .{p.path}) });
+        continue;
+    }
+    const entry = for (entries.items) |*e| {
+        if (std.mem.eql(u8, e.file, file.?) and sameName(e.name, p.name)) break e;
+    } else {
+        try problems.append(arena, .{ .line = line_no, .message = try std.fmt.allocPrint(arena, "S3: the skeleton has no block {s} of {s}", .{ p.name orelse "(file root)", file.? }) });
+        continue;
+    };
+    if (entry.used) {
+        try problems.append(arena, .{ .line = line_no, .message = try std.fmt.allocPrint(arena, "S3: the block {s} of {s} is placed twice", .{ p.name orelse "(file root)", file.? }) });
+        continue;
+    }
+    entry.used = true;
+    for (entry.blocks.items, 0..) |block, i| {
+        if (i > 0) try out.append(arena, "");
+        try out.appendSlice(arena, span(docs, block));
+    }
+    placed += @intCast(entry.blocks.items.len);
+}
+----
+
+The rest, file by file. Without a `… :rest:`, each block left over is a problem, reported at its line in the skeleton. With one, each file's blocks go under a level-3 heading with its path, in a collapsible example block that Asciidoctor shows closed. The labels inside it are still labels to Litmus, which does not treat example blocks as blocks, so the round trip holds.
+
+… assemble, the rest :file: assemble.zig
+[source,zig]
+----
+// S2: the blocks no placeholder placed, file by file, each file in a collapsible block.
+var rest: std.ArrayList([]const u8) = .empty;
+var rest_count: u32 = 0;
+for (files.items) |f| {
+    var count: u32 = 0;
+    for (entries.items) |e| if (!e.used and std.mem.eql(u8, e.file, f)) {
+        count += @intCast(e.blocks.items.len);
+    };
+    if (count == 0) continue;
+    if (rest_at == null) {
+        for (entries.items) |e| if (!e.used and std.mem.eql(u8, e.file, f)) {
+            try problems.append(arena, .{ .in_skeleton = true, .line = e.blocks.items[0].label.line, .message = try std.fmt.allocPrint(arena, "S3: the block {s} of {s} is not placed, and the template has no … :rest:", .{ e.name orelse "(file root)", f }) });
+        };
+        continue;
+    }
+    try rest.appendSlice(arena, &.{
+        try std.fmt.allocPrint(arena, "=== {s}", .{f}),
+        "",
+        try std.fmt.allocPrint(arena, ".The rest of the code ({d} {s})", .{ count, if (count == 1) "block" else "blocks" }),
+        "[%collapsible]",
+        "====",
+    });
+    var first = true;
+    for (entries.items) |e| if (!e.used and std.mem.eql(u8, e.file, f)) {
+        for (e.blocks.items) |block| {
+            if (!first) try rest.append(arena, "");
+            first = false;
+            try rest.appendSlice(arena, span(docs, block));
+        }
+    };
+    try rest.appendSlice(arena, &.{ "====", "" });
+    rest_count += count;
+}
+----
+
+The tests assemble a small skeleton with two files of the same name in different folders. The first places blocks by a shortened path and by the full one, keeps a block title and the marks of a diff, and puts the rest at the end; it checks the whole output. The second has each problem of S3 once, in the order they are reported. The third keeps a label of the template's own, with its block. The golden cases `assemble` and `assemble-refused` run the command, and `assemble` checks the output against the code.
+
+… assemble tests :file: assemble.zig
+[source,zig]
+----
+// Tests ----------------------------------------------------------------------
+
+const t = std.testing;
+const parse = @import("parse.zig");
+
+const skeleton_text =
+    \\= Skeleton
+    \\:litmus-companion:
+    \\
+    \\… :file: src/a/one.zig
+    \\[source,zig]
+    \\----
+    \\… first
+    \\
+    \\… second
+    \\----
+    \\
+    \\… first :file: src/a/one.zig
+    \\[source,zig]
+    \\----
+    \\const first = 1;
+    \\----
+    \\
+    \\… second :file: src/a/one.zig
+    \\[source,zig,litmus-changed="1"]
+    \\.A title
+    \\----
+    \\const second = 2;
+    \\----
+    \\
+    \\… :file: src/b/one.zig
+    \\[source,zig]
+    \\----
+    \\const other = 3;
+    \\----
+    \\
+;
+
+fn run(a: Allocator, template: []const u8) !Result {
+    var diags = types.Diagnostics.init(a);
+    const doc: types.Document = .{ .path = "s.adoc", .format = .asciidoc, .lines = try scan.splitLines(a, skeleton_text), .dir = "" };
+    const parsed = try parse.parse(a, 0, doc, &diags);
+    try t.expectEqual(0, diags.list.items.len);
+    return assemble(a, &.{doc}, parsed.blocks, try scan.splitLines(a, template));
+}
+
+test "S1, S2, S4: placeholders, a shortened path, the rest, and the header" {
+    var arena_state = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena_state.deinit();
+    const result = try run(arena_state.allocator(),
+        \\= Review
+        \\
+        \\The second, which changed:
+        \\
+        \\… second :file: a/one.zig
+        \\
+        \\And the root:
+        \\
+        \\… :file: src/a/one.zig
+        \\
+        \\== The rest
+        \\
+        \\… :rest:
+        \\
+    );
+    try t.expectEqual(0, result.problems.len);
+    try t.expectEqual(2, result.placed);
+    try t.expectEqual(2, result.rest);
+    try t.expectEqualStrings(
+        \\= Review
+        \\:litmus-companion:
+        \\
+        \\The second, which changed:
+        \\
+        \\… second :file: src/a/one.zig
+        \\[source,zig,litmus-changed="1"]
+        \\.A title
+        \\----
+        \\const second = 2;
+        \\----
+        \\
+        \\And the root:
+        \\
+        \\… :file: src/a/one.zig
+        \\[source,zig]
+        \\----
+        \\… first
+        \\
+        \\… second
+        \\----
+        \\
+        \\== The rest
+        \\
+        \\=== src/a/one.zig
+        \\
+        \\.The rest of the code (1 block)
+        \\[%collapsible]
+        \\====
+        \\… first :file: src/a/one.zig
+        \\[source,zig]
+        \\----
+        \\const first = 1;
+        \\----
+        \\====
+        \\
+        \\=== src/b/one.zig
+        \\
+        \\.The rest of the code (1 block)
+        \\[%collapsible]
+        \\====
+        \\… :file: src/b/one.zig
+        \\[source,zig]
+        \\----
+        \\const other = 3;
+        \\----
+        \\====
+        \\
+    , result.text);
+}
+
+test "S3: an ambiguous path, an unknown block, a block placed twice, a block left over" {
+    var arena_state = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena_state.deinit();
+    const result = try run(arena_state.allocator(),
+        \\= Review
+        \\
+        \\… :file: one.zig
+        \\
+        \\… third :file: a/one.zig
+        \\
+        \\… first :file: a/one.zig
+        \\
+        \\… first :file: a/one.zig
+        \\
+        \\… nothing here
+        \\
+    );
+    try t.expectEqual(0, result.text.len);
+    const want = [_][]const u8{
+        "S3: more than one file of the skeleton ends with one.zig; write more of its path",
+        "S3: the skeleton has no block third of src/a/one.zig",
+        "S3: the block first of src/a/one.zig is placed twice",
+        "S3: a placeholder needs :file:, as in … NAME :file: PATH: nothing here",
+        "S3: the block (file root) of src/a/one.zig is not placed, and the template has no … :rest:",
+        "S3: the block second of src/a/one.zig is not placed, and the template has no … :rest:",
+        "S3: the block (file root) of src/b/one.zig is not placed, and the template has no … :rest:",
+    };
+    try t.expectEqual(want.len, result.problems.len);
+    for (want, result.problems) |w, p| try t.expectEqualStrings(w, p.message);
+    try t.expectEqual(true, result.problems[4].in_skeleton);
+    try t.expectEqual(4, result.problems[4].line);
+}
+
+test "S1: a label with a block is the template's own" {
+    var arena_state = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena_state.deinit();
+    const result = try run(arena_state.allocator(),
+        \\… :rest:
+        \\
+        \\… extra :file: src/a/one.zig
+        \\[source,zig]
+        \\----
+        \\shown as it is
+        \\----
+        \\
+    );
+    try t.expectEqual(0, result.problems.len);
+    try t.expectEqual(0, result.placed);
+    try t.expect(std.mem.indexOf(u8, result.text, "shown as it is") != null);
+}
+----
+
 === Init, and main
 
 `init` takes the same options as tangle, apart from `--force`. It is given the name Litmus was run as, because the paragraph it writes names that (I1).
@@ -2731,7 +3318,7 @@ defer out.flush() catch {};
 defer err.flush() catch {};
 ----
 
-The first argument selects the command, and the newest are `untangle`, `sync`, `watch`, `style`, `adopt` and `blocks`. An error that escapes a command, such as a failed write, is printed with its name and exits with 1.
+The first argument selects the command, and the newest are `untangle`, `sync`, `watch`, `style`, `adopt`, `blocks` and `assemble`. An error that escapes a command, such as a failed write, is printed with its name and exits with 1.
 
 … main, dispatch :file: main.zig
 [source,zig]
@@ -2747,6 +3334,7 @@ const code = run: {
     if (std.mem.eql(u8, command, "style")) break :run styleCommand(ctx, rest);
     if (std.mem.eql(u8, command, "adopt")) break :run adoptCommand(ctx, rest);
     if (std.mem.eql(u8, command, "blocks")) break :run blocksCommand(ctx, rest);
+    if (std.mem.eql(u8, command, "assemble")) break :run assembleCommand(ctx, rest);
     if (std.mem.eql(u8, command, "guide")) {
         try out.writeAll(guide_text);
         break :run 0;
