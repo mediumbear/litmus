@@ -4,3 +4,4 @@ tools/
 zig-out/
 .zig-cache/
 .litmus/
+!test/cases/**/.litmus/

@@ -13,6 +13,7 @@ const untangle = @import("untangle.zig");
 const sync = @import("sync.zig");
 const watch = @import("watch.zig");
 const adopt = @import("adopt.zig");
+const marks = @import("marks.zig");
 
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
@@ -27,7 +28,8 @@ const usage =
     \\       litmus sync [-o DIR] DOCUMENT...
     \\       litmus watch [-o DIR] [--interval MS] DOCUMENT...
     \\       litmus style DOCUMENT...
-    \\       litmus adopt [-o DIR] [--companion] [--style FILE] DOCUMENT PATH...
+    \\       litmus blocks [--changed] DOCUMENT...
+    \\       litmus adopt [-o DIR] [--companion] [--style FILE] [--diff FILE] DOCUMENT PATH...
     \\
 ;
 
@@ -50,11 +52,15 @@ const Options = struct {
     /// For adopt: the document is a companion (L11), and names this style file (L10).
     companion: bool = false,
     style: ?[]const u8 = null,
+    /// For adopt: the diff whose changes are marked (A9).
+    diff: ?[]const u8 = null,
+    /// For blocks: only the blocks that mark changes (B1).
+    changed: bool = false,
     positional: []const []const u8 = &.{},
 };
 
 /// Which options a command takes besides `-o DIR`.
-const Allowed = struct { force: bool = false, files: bool = false, interval: bool = false, adopt: bool = false };
+const Allowed = struct { force: bool = false, files: bool = false, interval: bool = false, adopt: bool = false, changed: bool = false };
 
 /// Reads `-o DIR`, and `--force` and `-f FILE` when allowed. Prints the problem and returns
 /// null on a usage error.
@@ -74,6 +80,8 @@ fn parseOptions(ctx: Context, args: []const []const u8, allowed: Allowed) !?Opti
             options.out_dir = args[i];
         } else if (allowed.force and std.mem.eql(u8, arg, "--force")) {
             options.force = true;
+        } else if (allowed.changed and std.mem.eql(u8, arg, "--changed")) {
+            options.changed = true;
         } else if (allowed.adopt and std.mem.eql(u8, arg, "--companion")) {
             options.companion = true;
         } else if (allowed.adopt and std.mem.eql(u8, arg, "--style")) {
@@ -83,6 +91,13 @@ fn parseOptions(ctx: Context, args: []const []const u8, allowed: Allowed) !?Opti
                 return null;
             }
             options.style = args[i];
+        } else if (allowed.adopt and std.mem.eql(u8, arg, "--diff")) {
+            i += 1;
+            if (i == args.len) {
+                try ctx.err.writeAll("litmus: --diff needs a file\n");
+                return null;
+            }
+            options.diff = args[i];
         } else if (allowed.interval and std.mem.eql(u8, arg, "--interval")) {
             i += 1;
             const milliseconds = if (i < args.len) std.fmt.parseInt(u64, args[i], 10) catch 0 else 0;
@@ -687,6 +702,20 @@ fn adoptCommand(ctx: Context, args: []const []const u8) !u8 {
             return 1;
         }
     }
+    // A9: the changes to mark, read before anything is written.
+    var changes: []const marks.FileChange = &.{};
+    if (options.diff) |diff_path| {
+        const diff_text = cwd.readFileAlloc(ctx.io, diff_path, ctx.arena, .limited(1 << 30)) catch |e| {
+            try ctx.err.print("{s}: {s}\n", .{ diff_path, @errorName(e) });
+            return 1;
+        };
+        const parsed = try marks.parse(ctx.arena, diff_text);
+        if (parsed.problem) |p| {
+            try ctx.err.print("{s}:{d}: {s}; nothing was written\n", .{ diff_path, p.line, p.reason });
+            return 1;
+        }
+        changes = parsed.files;
+    }
     var dir = cwd.openDir(ctx.io, options.out_dir, .{}) catch |e| {
         try ctx.err.print("{s}: {s}\n", .{ options.out_dir, @errorName(e) });
         return 1;
@@ -720,20 +749,28 @@ fn adoptCommand(ctx: Context, args: []const []const u8) !u8 {
         try next(ctx, "leave the files above out, or change them, and run adopt again; nothing was written", .{});
         return 1;
     }
-    // A8: the document must tangle to the files before it is written.
-    const new_doc: types.Document = .{
+    var new_doc: types.Document = .{
         .path = document,
         .format = .asciidoc,
         .lines = try @import("scan.zig").splitLines(ctx.arena, result.text),
         .dir = std.fs.path.dirname(document) orelse "",
     };
+    var text = result.text;
+    var changed_blocks: u32 = 0;
+    if (options.diff != null) {
+        const marked = try marks.markDocument(ctx.arena, new_doc, changes);
+        text = marked.text;
+        changed_blocks = marked.blocks;
+        new_doc.lines = try @import("scan.zig").splitLines(ctx.arena, text);
+    }
+    // A8: the document must tangle to the files before it is written.
     var originals: std.ArrayList(untangle.FileText) = .empty;
     for (sources.items) |source| try originals.append(ctx.arena, .{ .path = source.path, .text = source.text });
     if (try untangle.verify(ctx.arena, &.{new_doc}, &.{document}, originals.items)) |message| {
         try ctx.err.print("{s}; this is a fault in Litmus, and nothing was written\n", .{message});
         return 1;
     }
-    try output.writeAtomic(ctx.io, cwd, document, result.text, false);
+    try output.writeAtomic(ctx.io, cwd, document, text, false);
 
     // A8: the map, so that untangle, sync and watch work at once.
     const built = (try build(ctx, &.{document})) orelse return 1;
@@ -744,6 +781,9 @@ fn adoptCommand(ctx: Context, args: []const []const u8) !u8 {
     try output.writeAtomic(ctx.io, map_dir, output.map_path, try map.render(ctx.arena, built.docs, built.files), false);
 
     try ctx.out.print("wrote {s}: {d} {s}, {d} excerpts\n", .{ document, sources.items.len, if (sources.items.len == 1) "file" else "files", result.excerpts });
+    if (options.diff) |diff_path| {
+        try ctx.out.print("marked {d} {s} that {s} changed (A9); litmus blocks --changed lists them\n", .{ changed_blocks, if (changed_blocks == 1) "block" else "blocks", diff_path });
+    }
     if (options.style) |style| {
         try next(ctx, "read the code, propose an outline of chapters and the order that explains it best, and after it is agreed write the prose following the style in {s}; run litmus check after each chapter", .{style});
     } else {
@@ -763,6 +803,29 @@ fn styleCommand(ctx: Context, args: []const []const u8) !u8 {
     if (diags.list.items.len == 0) return 0;
     try printDiagnostics(ctx, &diags, set.docs);
     return 1;
+}
+
+/// B1, B2: one line per labeled block, for a writer who has not read the documents.
+fn blocksCommand(ctx: Context, args: []const []const u8) !u8 {
+    const options = (try parseOptions(ctx, args, .{ .changed = true })) orelse return 2;
+    if (!try documentsOk(ctx, options.positional)) return 2;
+    var diags = types.Diagnostics.init(ctx.arena);
+    var fs: DiskFs = .{ .io = ctx.io };
+    const set = try docset.load(ctx.arena, &fs, options.positional, &diags);
+    if (diags.list.items.len > 0) {
+        try printDiagnostics(ctx, &diags, set.docs);
+        return 1;
+    }
+    for (set.blocks) |block| {
+        const doc = set.docs[block.label.doc];
+        const m = marks.blockMarks(doc, block);
+        if (options.changed and m.changed == null and m.removed == null) continue;
+        try ctx.out.print("{s}:{d}  {s}  {s}  {d} {s}", .{ doc.path, block.label.line, block.label.file, block.label.name orelse "(file root)", block.lines.len, if (block.lines.len == 1) "line" else "lines" });
+        if (m.changed) |c| try ctx.out.print("  changed {s}", .{c});
+        if (m.removed) |r| try ctx.out.print("  removed {s}", .{r});
+        try ctx.out.writeAll("\n");
+    }
+    return 0;
 }
 
 fn initCommand(ctx: Context, exe: []const u8, args: []const []const u8) !u8 {
@@ -802,6 +865,7 @@ pub fn main(init: std.process.Init) !u8 {
         if (std.mem.eql(u8, command, "watch")) break :run watchCommand(ctx, rest);
         if (std.mem.eql(u8, command, "style")) break :run styleCommand(ctx, rest);
         if (std.mem.eql(u8, command, "adopt")) break :run adoptCommand(ctx, rest);
+        if (std.mem.eql(u8, command, "blocks")) break :run blocksCommand(ctx, rest);
         if (std.mem.eql(u8, command, "guide")) {
             try out.writeAll(guide_text);
             break :run 0;

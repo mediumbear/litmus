@@ -28,13 +28,16 @@ Does whichever of tangle and untangle is needed.
 `litmus watch [-o DIR] [--interval MS] DOCUMENT...`::
 Runs sync now, and again whenever a file changes.
 
-`litmus adopt [-o DIR] [--companion] [--style FILE] DOCUMENT PATH...`::
-Writes a new document from files that have none.
+`litmus adopt [-o DIR] [--companion] [--style FILE] [--diff FILE] DOCUMENT PATH...`::
+Writes a new document from files that have none, and marks the lines a diff changed.
 
 `litmus style DOCUMENT...`::
 Prints the style file that applies to each document.
 
-`main.zig` reads the command line and runs the right command. `compare.zig` is the comparison that `check` makes, and `init.zig` is init. The text of the guide is a file of its own, which the program carries inside it.
+`litmus blocks [--changed] DOCUMENT...`::
+Lists the labeled blocks of the documents, one line each.
+
+`main.zig` reads the command line and runs the right command. `compare.zig` is the comparison that `check` makes, `marks.zig` reads a diff for adopt, and `init.zig` is init. The text of the guide is a file of its own, which the program carries inside it.
 
 === The command line
 
@@ -89,12 +92,14 @@ Prints the style file that applies to each document.
 
 … styleCommand
 
+… blocksCommand
+
 … initCommand
 
 … main
 ----
 
-The file imports every stage, since it is where they meet. Untangle, sync, watch and adopt come last.
+The file imports every stage, since it is where they meet. Untangle, sync, watch, adopt and the marks of a diff come last.
 
 … header :file: main.zig
 [source,zig]
@@ -114,12 +119,13 @@ const untangle = @import("untangle.zig");
 const sync = @import("sync.zig");
 const watch = @import("watch.zig");
 const adopt = @import("adopt.zig");
+const marks = @import("marks.zig");
 
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
 ----
 
-The usage text is printed for any wrong command line, and lists the ten commands, and the guide is embedded in the program with `@embedFile`, so that `litmus guide` always matches the version of Litmus in use.
+The usage text is printed for any wrong command line, and lists the commands, and the guide is embedded in the program with `@embedFile`, so that `litmus guide` always matches the version of Litmus in use.
 
 … usage :file: main.zig
 [source,zig]
@@ -134,7 +140,8 @@ const usage =
     \\       litmus sync [-o DIR] DOCUMENT...
     \\       litmus watch [-o DIR] [--interval MS] DOCUMENT...
     \\       litmus style DOCUMENT...
-    \\       litmus adopt [-o DIR] [--companion] [--style FILE] DOCUMENT PATH...
+    \\       litmus blocks [--changed] DOCUMENT...
+    \\       litmus adopt [-o DIR] [--companion] [--style FILE] [--diff FILE] DOCUMENT PATH...
     \\
 ;
 
@@ -154,7 +161,7 @@ const Context = struct {
 };
 ----
 
-The options are `-o DIR`, `--force` for tangle and untangle, and `-f FILE` for untangle (U8), `--interval MS` for watch (W3), and `--companion` and `--style FILE` for adopt (A8). Each command says which of them it takes, in an `Allowed` value. Anything else that starts with a hyphen is an error, and the rest are the positional arguments: documents, or the `FILE:LINE` of `where`. `parseOptions` prints the problem itself and returns null, and the caller exits with 2.
+The options are `-o DIR`, `--force` for tangle and untangle, and `-f FILE` for untangle (U8), `--interval MS` for watch (W3), `--companion`, `--style FILE` and `--diff FILE` for adopt (A8, A9), and `--changed` for blocks (B1). Each command says which of them it takes, in an `Allowed` value. Anything else that starts with a hyphen is an error, and the rest are the positional arguments: documents, or the `FILE:LINE` of `where`. `parseOptions` prints the problem itself and returns null, and the caller exits with 2.
 
 … Options :file: main.zig
 [source,zig]
@@ -169,11 +176,15 @@ const Options = struct {
     /// For adopt: the document is a companion (L11), and names this style file (L10).
     companion: bool = false,
     style: ?[]const u8 = null,
+    /// For adopt: the diff whose changes are marked (A9).
+    diff: ?[]const u8 = null,
+    /// For blocks: only the blocks that mark changes (B1).
+    changed: bool = false,
     positional: []const []const u8 = &.{},
 };
 
 /// Which options a command takes besides `-o DIR`.
-const Allowed = struct { force: bool = false, files: bool = false, interval: bool = false, adopt: bool = false };
+const Allowed = struct { force: bool = false, files: bool = false, interval: bool = false, adopt: bool = false, changed: bool = false };
 
 /// Reads `-o DIR`, and `--force` and `-f FILE` when allowed. Prints the problem and returns
 /// null on a usage error.
@@ -193,6 +204,8 @@ fn parseOptions(ctx: Context, args: []const []const u8, allowed: Allowed) !?Opti
             options.out_dir = args[i];
         } else if (allowed.force and std.mem.eql(u8, arg, "--force")) {
             options.force = true;
+        } else if (allowed.changed and std.mem.eql(u8, arg, "--changed")) {
+            options.changed = true;
         } else if (allowed.adopt and std.mem.eql(u8, arg, "--companion")) {
             options.companion = true;
         } else if (allowed.adopt and std.mem.eql(u8, arg, "--style")) {
@@ -202,6 +215,13 @@ fn parseOptions(ctx: Context, args: []const []const u8, allowed: Allowed) !?Opti
                 return null;
             }
             options.style = args[i];
+        } else if (allowed.adopt and std.mem.eql(u8, arg, "--diff")) {
+            i += 1;
+            if (i == args.len) {
+                try ctx.err.writeAll("litmus: --diff needs a file\n");
+                return null;
+            }
+            options.diff = args[i];
         } else if (allowed.interval and std.mem.eql(u8, arg, "--interval")) {
             i += 1;
             const milliseconds = if (i < args.len) std.fmt.parseInt(u64, args[i], 10) catch 0 else 0;
@@ -1253,7 +1273,7 @@ fn collectFiles(ctx: Context, dir: Io.Dir, path: []const u8, out: *std.ArrayList
 }
 ----
 
-The command checks what it can before it reads any code. Adopt writes only new documents, and only asciidoc. A style file that it is asked to name must exist (C12), with its path taken from the document's directory, as the document will take it.
+The command checks what it can before it reads any code. Adopt writes only new documents, and only asciidoc. A style file that it is asked to name must exist (C12), with its path taken from the document's directory, as the document will take it. A diff is read and parsed now too, so that one it cannot read stops it before anything is written (A9).
 
 … adoptCommand :file: main.zig
 [source,zig]
@@ -1280,6 +1300,20 @@ fn adoptCommand(ctx: Context, args: []const []const u8) !u8 {
             try ctx.err.print("{s}: the style file does not exist (C12)\n", .{path});
             return 1;
         }
+    }
+    // A9: the changes to mark, read before anything is written.
+    var changes: []const marks.FileChange = &.{};
+    if (options.diff) |diff_path| {
+        const diff_text = cwd.readFileAlloc(ctx.io, diff_path, ctx.arena, .limited(1 << 30)) catch |e| {
+            try ctx.err.print("{s}: {s}\n", .{ diff_path, @errorName(e) });
+            return 1;
+        };
+        const parsed = try marks.parse(ctx.arena, diff_text);
+        if (parsed.problem) |p| {
+            try ctx.err.print("{s}:{d}: {s}; nothing was written\n", .{ diff_path, p.line, p.reason });
+            return 1;
+        }
+        changes = parsed.files;
     }
     var dir = cwd.openDir(ctx.io, options.out_dir, .{}) catch |e| {
         try ctx.err.print("{s}: {s}\n", .{ options.out_dir, @errorName(e) });
@@ -1329,28 +1363,36 @@ if (sources.items.len == 0) {
 }
 ----
 
-Then the document is made, by `adopt.zig`. If any file is refused, the reasons are printed and nothing is written (A2). Otherwise, before anything is written, the new document is tangled in memory, by the same check that untangle uses (U9), and every file must come back byte for byte. A difference would be a fault in Litmus, and nothing is written then either.
+Then the document is made, by `adopt.zig`. If any file is refused, the reasons are printed and nothing is written (A2). With a diff, the blocks that hold changed lines are marked (A9). Then, before anything is written, the new document is tangled in memory, by the same check that untangle uses (U9), and every file must come back byte for byte. A difference would be a fault in Litmus, and nothing is written then either.
 
 … adopt, check and write :file: main.zig
 [source,zig]
 ----
-// A8: the document must tangle to the files before it is written.
-const new_doc: types.Document = .{
+var new_doc: types.Document = .{
     .path = document,
     .format = .asciidoc,
     .lines = try @import("scan.zig").splitLines(ctx.arena, result.text),
     .dir = std.fs.path.dirname(document) orelse "",
 };
+var text = result.text;
+var changed_blocks: u32 = 0;
+if (options.diff != null) {
+    const marked = try marks.markDocument(ctx.arena, new_doc, changes);
+    text = marked.text;
+    changed_blocks = marked.blocks;
+    new_doc.lines = try @import("scan.zig").splitLines(ctx.arena, text);
+}
+// A8: the document must tangle to the files before it is written.
 var originals: std.ArrayList(untangle.FileText) = .empty;
 for (sources.items) |source| try originals.append(ctx.arena, .{ .path = source.path, .text = source.text });
 if (try untangle.verify(ctx.arena, &.{new_doc}, &.{document}, originals.items)) |message| {
     try ctx.err.print("{s}; this is a fault in Litmus, and nothing was written\n", .{message});
     return 1;
 }
-try output.writeAtomic(ctx.io, cwd, document, result.text, false);
+try output.writeAtomic(ctx.io, cwd, document, text, false);
 ----
 
-Last, the map, so that untangle, sync and watch can be used at once (A8). For a companion it goes beside the document, and nothing is written under the code's directory (R2). The report ends with the next step: an outline, then the prose, in the style the document names (N1).
+Last, the map, so that untangle, sync and watch can be used at once (A8). For a companion it goes beside the document, and nothing is written under the code's directory (R2). The report says how many blocks a diff marked, and ends with the next step: an outline, then the prose, in the style the document names (N1).
 
 … adopt, the map and the report :file: main.zig
 [source,zig]
@@ -1364,6 +1406,9 @@ defer map_dir.close(ctx.io);
 try output.writeAtomic(ctx.io, map_dir, output.map_path, try map.render(ctx.arena, built.docs, built.files), false);
 
 try ctx.out.print("wrote {s}: {d} {s}, {d} excerpts\n", .{ document, sources.items.len, if (sources.items.len == 1) "file" else "files", result.excerpts });
+if (options.diff) |diff_path| {
+    try ctx.out.print("marked {d} {s} that {s} changed (A9); litmus blocks --changed lists them\n", .{ changed_blocks, if (changed_blocks == 1) "block" else "blocks", diff_path });
+}
 if (options.style) |style| {
     try next(ctx, "read the code, propose an outline of chapters and the order that explains it best, and after it is agreed write the prose following the style in {s}; run litmus check after each chapter", .{style});
 } else {
@@ -1387,6 +1432,35 @@ fn styleCommand(ctx: Context, args: []const []const u8) !u8 {
     if (diags.list.items.len == 0) return 0;
     try printDiagnostics(ctx, &diags, set.docs);
     return 1;
+}
+----
+
+`blocks` lists the blocks of a document set, one line each, so that a writer can learn the names it needs, and where the changes are, without reading the documents (B1). It only loads the set: it needs neither the code nor a set whose excerpts resolve, since it is meant for documents being written (B2). The marks come from `marks.zig`.
+
+… blocksCommand :file: main.zig
+[source,zig]
+----
+/// B1, B2: one line per labeled block, for a writer who has not read the documents.
+fn blocksCommand(ctx: Context, args: []const []const u8) !u8 {
+    const options = (try parseOptions(ctx, args, .{ .changed = true })) orelse return 2;
+    if (!try documentsOk(ctx, options.positional)) return 2;
+    var diags = types.Diagnostics.init(ctx.arena);
+    var fs: DiskFs = .{ .io = ctx.io };
+    const set = try docset.load(ctx.arena, &fs, options.positional, &diags);
+    if (diags.list.items.len > 0) {
+        try printDiagnostics(ctx, &diags, set.docs);
+        return 1;
+    }
+    for (set.blocks) |block| {
+        const doc = set.docs[block.label.doc];
+        const m = marks.blockMarks(doc, block);
+        if (options.changed and m.changed == null and m.removed == null) continue;
+        try ctx.out.print("{s}:{d}  {s}  {s}  {d} {s}", .{ doc.path, block.label.line, block.label.file, block.label.name orelse "(file root)", block.lines.len, if (block.lines.len == 1) "line" else "lines" });
+        if (m.changed) |c| try ctx.out.print("  changed {s}", .{c});
+        if (m.removed) |r| try ctx.out.print("  removed {s}", .{r});
+        try ctx.out.writeAll("\n");
+    }
+    return 0;
 }
 ----
 
@@ -2142,6 +2216,468 @@ test "A6: names" {
 }
 ----
 
+=== Marking what a diff changed
+
+A document made for reviewing a change should say which of its blocks the change touched: adopt puts every line of every file in the document, and most of them did not change. `adopt --diff FILE` reads a unified diff and marks each block that holds a changed line, on its source line (A9, L12). The weave then highlights those lines, and `blocks --changed` lists the blocks.
+
+… :file: marks.zig
+[source,zig]
+----
+… marks header
+
+… what a diff changed
+
+… diff paths
+
+… hunk ranges
+
+… parse a diff
+
+… marks of a block
+
+… ranges
+
+… origin
+
+… mark
+
+… read the marks
+
+… markDocument
+
+… marks tests
+----
+
+`marks.zig` is pure: it gets text and returns text. Adopt reads the diff before anything else, so that a diff it cannot read stops it before it writes (A9).
+
+… marks header :file: marks.zig
+[source,zig]
+----
+//! `adopt --diff` (A9): reads a unified diff, and marks the blocks of an adopted document
+//! that hold the lines it changed (L12). No IO.
+
+const std = @import("std");
+const types = @import("types.zig");
+const tangle = @import("tangle.zig");
+const map = @import("map.zig");
+
+const Allocator = std.mem.Allocator;
+const Block = types.Block;
+----
+
+A diff is read into one `FileChange` for each file it names. Only the new side matters, since the document holds the code after the change: the lines that were added, and the places where lines went away. A deleted file has no new side, so it is left out.
+
+… what a diff changed :file: marks.zig
+[source,zig]
+----
+/// Lines removed from a file, after its new side's line `after` (0 is the start).
+pub const Removal = struct { after: u32, count: u32 };
+
+/// What a diff did to one file, on its new side. Lines count from 1.
+pub const FileChange = struct {
+    path: []const u8,
+    /// The added lines, in order.
+    added: []const u32,
+    removed: []const Removal,
+};
+
+pub const Parsed = struct {
+    files: []const FileChange,
+    /// The line of the diff that could not be read, and why; then `files` is empty.
+    problem: ?struct { line: u32, reason: []const u8 } = null,
+};
+----
+
+The `---` and `+++` lines name the file. Git adds a tab after a name that has a space in it, puts quotes around a name with unusual bytes, and writes escapes inside them, with bytes beyond ASCII in octal. All of that is undone, and the `a/` or `b/` that git puts in front is taken off, so the path is relative to the repository's root, as adopt's paths are.
+
+… diff paths :file: marks.zig
+[source,zig]
+----
+/// A path of a `---` or `+++` line: without the tab and what follows it, without the
+/// quotes git puts around unusual names, and without a leading `a/` or `b/`.
+fn diffPath(arena: Allocator, raw: []const u8) ![]const u8 {
+    var path = raw;
+    if (std.mem.indexOfScalar(u8, path, '\t')) |tab| path = path[0..tab];
+    path = std.mem.trimEnd(u8, path, " \r");
+    if (path.len >= 2 and path[0] == '"' and path[path.len - 1] == '"') {
+        // C-style escapes: \\, \", \t, \n, and octal bytes such as \303.
+        var out: std.ArrayList(u8) = .empty;
+        var i: usize = 1;
+        while (i < path.len - 1) : (i += 1) {
+            const c = path[i];
+            if (c != '\\' or i + 1 >= path.len - 1) {
+                try out.append(arena, c);
+                continue;
+            }
+            i += 1;
+            switch (path[i]) {
+                't' => try out.append(arena, '\t'),
+                'n' => try out.append(arena, '\n'),
+                '0'...'7' => {
+                    var value: u32 = 0;
+                    var digits: usize = 0;
+                    while (digits < 3 and i < path.len - 1 and path[i] >= '0' and path[i] <= '7') : (digits += 1) {
+                        value = value * 8 + (path[i] - '0');
+                        i += 1;
+                    }
+                    i -= 1;
+                    try out.append(arena, @truncate(value));
+                },
+                else => |e| try out.append(arena, e),
+            }
+        }
+        path = out.items;
+    }
+    if (std.mem.startsWith(u8, path, "a/") or std.mem.startsWith(u8, path, "b/")) path = path[2..];
+    return path;
+}
+----
+
+A hunk header gives each side as a start and a count. The count may be left out when it is 1.
+
+… hunk ranges :file: marks.zig
+[source,zig]
+----
+/// The start and count of one side of a hunk header, such as `12,3` or `12`.
+fn range(text: []const u8) ?struct { start: u32, count: u32 } {
+    const comma = std.mem.indexOfScalar(u8, text, ',');
+    const start = std.fmt.parseInt(u32, if (comma) |c| text[0..c] else text, 10) catch return null;
+    const count = if (comma) |c| std.fmt.parseInt(u32, text[c + 1 ..], 10) catch return null else 1;
+    return .{ .start = start, .count = count };
+}
+----
+
+Each hunk is read by its counts, not by the first character of its lines alone: a removed line whose text starts with `--` looks like a `---` line, and only the counts say it is part of the hunk. `at` is the number of new-side lines before the next line of the hunk. For a hunk that adds nothing, git gives the line after which the removal happened, not the first line, so `at` starts there.
+
+Removed and added lines that are next to each other form a group. A group of one removed line and one added line is a line that was replaced: it is changed, and not also removed. Only the removed lines beyond the added ones count as removed, after the group's last line. A diff that ends inside a hunk, or a hunk longer than its header, is reported with its line, and nothing comes back.
+
+… parse a diff :file: marks.zig
+[source,zig]
+----
+/// A9: the changes of each file a unified diff names. A file the diff deletes is left out.
+pub fn parse(arena: Allocator, text: []const u8) !Parsed {
+    const lines = try @import("scan.zig").splitLines(arena, text);
+    var files: std.ArrayList(FileChange) = .empty;
+    var added: std.ArrayList(u32) = .empty;
+    var removed: std.ArrayList(Removal) = .empty;
+    var path: ?[]const u8 = null;
+
+    var i: usize = 0;
+    while (i < lines.len) : (i += 1) {
+        const line = lines[i];
+        if (std.mem.startsWith(u8, line, "+++ ")) {
+            if (path) |p| try files.append(arena, .{ .path = p, .added = try added.toOwnedSlice(arena), .removed = try removed.toOwnedSlice(arena) });
+            const name = try diffPath(arena, line[4..]);
+            path = if (std.mem.eql(u8, name, "/dev/null")) null else name;
+            continue;
+        }
+        if (!std.mem.startsWith(u8, line, "@@ -")) continue;
+
+        // @@ -a,b +c,d @@
+        const bad: Parsed = .{ .files = &.{}, .problem = .{ .line = @intCast(i + 1), .reason = "A9: a hunk header that cannot be read" } };
+        const rest = line[4..];
+        const space = std.mem.indexOfScalar(u8, rest, ' ') orelse return bad;
+        const old = range(rest[0..space]) orelse return bad;
+        if (!std.mem.startsWith(u8, rest[space..], " +")) return bad;
+        const after_plus = rest[space + 2 ..];
+        const end = std.mem.indexOfScalar(u8, after_plus, ' ') orelse return bad;
+        const new = range(after_plus[0..end]) orelse return bad;
+
+        // The new side's lines before the next line of the hunk.
+        var at: u32 = if (new.count == 0) new.start else new.start - @min(new.start, 1);
+        var old_left = old.count;
+        var new_left = new.count;
+        // The group of removed and added lines being read.
+        var minus: u32 = 0;
+        var plus: u32 = 0;
+        while (old_left > 0 or new_left > 0) {
+            i += 1;
+            if (i >= lines.len) return .{ .files = &.{}, .problem = .{ .line = @intCast(lines.len), .reason = "A9: the diff ends inside a hunk" } };
+            const body = lines[i];
+            const too_long: Parsed = .{ .files = &.{}, .problem = .{ .line = @intCast(i + 1), .reason = "A9: the hunk has more lines than its header says" } };
+            // Some tools drop the space of an empty line of context.
+            switch (if (body.len == 0) ' ' else body[0]) {
+                '\\' => continue, // "\ No newline at end of file"
+                ' ' => {
+                    if (path != null and minus > plus) try removed.append(arena, .{ .after = at, .count = minus - plus });
+                    minus = 0;
+                    plus = 0;
+                    if (old_left == 0 or new_left == 0) return too_long;
+                    old_left -= 1;
+                    new_left -= 1;
+                    at += 1;
+                },
+                '+' => {
+                    if (new_left == 0) return too_long;
+                    new_left -= 1;
+                    at += 1;
+                    plus += 1;
+                    if (path != null) try added.append(arena, at);
+                },
+                '-' => {
+                    if (old_left == 0) return too_long;
+                    old_left -= 1;
+                    minus += 1;
+                },
+                else => return .{ .files = &.{}, .problem = .{ .line = @intCast(i + 1), .reason = "A9: a line of a hunk that is neither context, added nor removed" } },
+            }
+        }
+        if (path != null and minus > plus) try removed.append(arena, .{ .after = at, .count = minus - plus });
+    }
+    if (path) |p| try files.append(arena, .{ .path = p, .added = try added.toOwnedSlice(arena), .removed = try removed.toOwnedSlice(arena) });
+    return .{ .files = files.items };
+}
+----
+
+The marks gathered for one block: the numbers of its changed lines, and how many lines were removed in it.
+
+… marks of a block :file: marks.zig
+[source,zig]
+----
+/// A document's lines with the marks, and how many blocks have them.
+pub const Marked = struct { lines: []const []const u8, blocks: u32 };
+
+/// The marks of one block: its changed lines, counting from its first line, and how many
+/// lines were removed in it.
+const Marks = struct {
+    lines: std.ArrayList(u32) = .empty,
+    removed: u32 = 0,
+};
+----
+
+The changed lines are written as ranges, so that a block of forty new lines is marked `1..40`.
+
+… ranges :file: marks.zig
+[source,zig]
+----
+/// `3..7;12`: the numbers, which are in order, as ranges.
+pub fn ranges(arena: Allocator, numbers: []const u32) ![]const u8 {
+    var out: std.ArrayList(u8) = .empty;
+    var i: usize = 0;
+    while (i < numbers.len) {
+        var j = i;
+        while (j + 1 < numbers.len and numbers[j + 1] == numbers[j] + 1) j += 1;
+        if (out.items.len > 0) try out.append(arena, ';');
+        if (j == i) {
+            try out.print(arena, "{d}", .{numbers[i]});
+        } else {
+            try out.print(arena, "{d}..{d}", .{ numbers[i], numbers[j] });
+        }
+        i = j + 1;
+    }
+    return out.items;
+}
+----
+
+The map of a tangled file already says, for each of its lines, the block it came from and where in it (L12 counts from the block's first line of code). `findRun` finds the run by binary search.
+
+… origin :file: marks.zig
+[source,zig]
+----
+/// The block that `line` of a tangled file comes from, and the line's number in it.
+fn origin(file: tangle.Tangled, line: u32) ?struct { block: *const Block, index: u32 } {
+    const r = map.findRun(file.runs, line) orelse return null;
+    const run = file.runs[r];
+    const block = run.block orelse return null;
+    return .{ .block = block, .index = run.doc_line - block.first_line + (line - run.line) + 1 };
+}
+
+fn lessU32(_: void, a: u32, b: u32) bool {
+    return a < b;
+}
+----
+
+Marking is a walk over the changes. Each added line is traced to its block. A removal is traced to the line it follows, or to the file's first line when it is at the start, and the last line when the file is shorter. Then each marked block's source line gets the attributes, before its closing bracket. Adopt writes the source line two lines above the code, which is how it is found; a line that does not look like one is left alone.
+
+… mark :file: marks.zig
+[source,zig]
+----
+/// A9: the lines of an adopted document, with the marks of L12 on the source lines of the
+/// blocks that hold changed lines. `files` are the document's files, tangled. Adopt
+/// writes each source line two lines above the block's first line of code.
+pub fn mark(arena: Allocator, doc_lines: []const []const u8, files: []const tangle.Tangled, changes: []const FileChange) !Marked {
+    var marks: std.AutoArrayHashMapUnmanaged(*const Block, Marks) = .empty;
+    for (changes) |change| {
+        const file = for (files) |f| {
+            if (std.mem.eql(u8, f.path, change.path)) break f;
+        } else continue;
+        const count: u32 = @intCast(std.mem.countScalar(u8, file.text, '\n'));
+        for (change.added) |line| {
+            const o = origin(file, line) orelse continue;
+            const entry = try marks.getOrPutValue(arena, o.block, .{});
+            try entry.value_ptr.lines.append(arena, o.index);
+        }
+        for (change.removed) |removal| {
+            if (count == 0) continue;
+            const o = origin(file, @min(@max(removal.after, 1), count)) orelse continue;
+            const entry = try marks.getOrPutValue(arena, o.block, .{});
+            entry.value_ptr.removed += removal.count;
+        }
+    }
+
+    const result = try arena.dupe([]const u8, doc_lines);
+    var marked: u32 = 0;
+    var it = marks.iterator();
+    while (it.next()) |entry| {
+        const block = entry.key_ptr.*;
+        const m = entry.value_ptr;
+        const at = block.first_line - 3;
+        const source = result[at];
+        if (!std.mem.startsWith(u8, source, "[source,") or !std.mem.endsWith(u8, source, "]")) continue;
+        var line: std.ArrayList(u8) = .empty;
+        try line.appendSlice(arena, source[0 .. source.len - 1]);
+        if (m.lines.items.len > 0) {
+            std.mem.sort(u32, m.lines.items, {}, lessU32);
+            try line.print(arena, ",litmus-changed=\"{s}\"", .{try ranges(arena, m.lines.items)});
+        }
+        if (m.removed > 0) try line.print(arena, ",litmus-removed=\"{d}\"", .{m.removed});
+        try line.append(arena, ']');
+        result[at] = line.items;
+        marked += 1;
+    }
+    return .{ .lines = result, .blocks = marked };
+}
+----
+
+`blocks` reads the marks back (B1). The values are taken as they are written, so a document whose marks were edited by hand shows what it says.
+
+… read the marks :file: marks.zig
+[source,zig]
+----
+/// L12: the value of `name="..."` in a block attribute line, or null.
+pub fn attribute(line: []const u8, name: []const u8) ?[]const u8 {
+    var from: usize = 0;
+    while (std.mem.indexOfPos(u8, line, from, name)) |at| {
+        from = at + name.len;
+        const before_ok = at > 0 and (line[at - 1] == ',' or line[at - 1] == '[');
+        if (!before_ok or !std.mem.startsWith(u8, line[from..], "=\"")) continue;
+        const start = from + 2;
+        const end = std.mem.indexOfScalarPos(u8, line, start, '"') orelse return null;
+        return line[start..end];
+    }
+    return null;
+}
+
+/// L12: what a block's source line says changed, as written there.
+pub const BlockMarks = struct { changed: ?[]const u8 = null, removed: ?[]const u8 = null };
+
+/// L12: the marks of a block, from the attribute lines between its label and its code.
+pub fn blockMarks(doc: types.Document, block: Block) BlockMarks {
+    if (block.first_line < 2 or block.label.line + 1 > block.first_line - 1) return .{};
+    var result: BlockMarks = .{};
+    for (doc.lines[block.label.line .. block.first_line - 2]) |line| {
+        if (attribute(line, "litmus-changed")) |v| result.changed = v;
+        if (attribute(line, "litmus-removed")) |v| result.removed = v;
+    }
+    return result;
+}
+----
+
+`markDocument` puts it together for adopt: it parses, resolves and tangles the new document in memory, as the tests of tangling do, marks it, and gives back the text. Adopt then checks the marked document against the files (A8), so the marks can never cost a byte of code.
+
+… markDocument :file: marks.zig
+[source,zig]
+----
+/// A9: the text of an adopted document with the marks of the changes. The document must
+/// pass the checks, as adopt's does by construction.
+pub fn markDocument(arena: Allocator, doc: types.Document, changes: []const FileChange) !struct { text: []const u8, blocks: u32 } {
+    var diags = types.Diagnostics.init(arena);
+    const parsed = try @import("parse.zig").parse(arena, 0, doc, &diags);
+    const resolved = try @import("resolve.zig").resolve(arena, try arena.dupe(types.Document, &.{doc}), parsed.blocks, &diags);
+    if (diags.list.items.len > 0) return error.InvalidDocument;
+    const files = try tangle.tangleAll(arena, resolved);
+    const marked = try mark(arena, doc.lines, files, changes);
+    var out: std.ArrayList(u8) = .empty;
+    for (marked.lines) |line| {
+        try out.appendSlice(arena, line);
+        try out.append(arena, '\n');
+    }
+    return .{ .text = out.items, .blocks = marked.blocks };
+}
+----
+
+The tests read a diff with context, with a replaced line and a removed one, a second hunk that only adds, a deleted file, and a new file with a quoted name and no final newline. Then a removal without context, a hunk cut short, the attributes of a source line, and ranges. The golden cases `adopt-diff` and `adopt-diff-unreadable` run the whole command.
+
+… marks tests :file: marks.zig
+[source,zig]
+----
+// Tests ----------------------------------------------------------------------
+
+const t = std.testing;
+
+test "A9: a diff with context, a new file, a deleted file and a quoted path" {
+    var arena_state = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const parsed = try parse(a,
+        \\diff --git a/x.zig b/x.zig
+        \\index 1..2 100644
+        \\--- a/x.zig
+        \\+++ b/x.zig
+        \\@@ -1,5 +1,4 @@
+        \\ one
+        \\-two
+        \\+TWO
+        \\ three
+        \\-four
+        \\ five
+        \\@@ -9,0 +9,2 @@ fn tail
+        \\+nine
+        \\+ten
+        \\diff --git a/gone.zig b/gone.zig
+        \\--- a/gone.zig
+        \\+++ /dev/null
+        \\@@ -1,2 +0,0 @@
+        \\-a
+        \\-b
+        \\--- /dev/null
+        \\+++ "b/caf\303\251 x.txt"
+        \\@@ -0,0 +1 @@
+        \\+new
+        \\\ No newline at end of file
+        \\
+    );
+    try t.expect(parsed.problem == null);
+    try t.expectEqual(2, parsed.files.len);
+    const x = parsed.files[0];
+    try t.expectEqualStrings("x.zig", x.path);
+    try t.expectEqualSlices(u32, &.{ 2, 9, 10 }, x.added);
+    // `two` was replaced, so it is not removed; `four` was removed after `three`.
+    try t.expectEqual(1, x.removed.len);
+    try t.expectEqual(Removal{ .after = 3, .count = 1 }, x.removed[0]);
+    try t.expectEqualStrings("café x.txt", parsed.files[1].path);
+    try t.expectEqualSlices(u32, &.{1}, parsed.files[1].added);
+}
+
+test "A9: a removal without context, and a hunk that is cut short" {
+    var arena_state = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const parsed = try parse(a, "+++ b/y.txt\n@@ -4,2 +3,0 @@\n-x\n-y\n@@ -10 +9 @@\n-old\n+new\n");
+    try t.expectEqual(Removal{ .after = 3, .count = 2 }, parsed.files[0].removed[0]);
+    try t.expectEqualSlices(u32, &.{9}, parsed.files[0].added);
+    const short = try parse(a, "+++ b/y.txt\n@@ -1,3 +1,3 @@\n a\n");
+    try t.expect(short.problem != null);
+    try t.expectEqual(0, short.files.len);
+}
+
+test "L12: the marks of a source line" {
+    const line = "[source,swift,litmus-changed=\"3..7;12\",litmus-removed=\"2\"]";
+    try t.expectEqualStrings("3..7;12", attribute(line, "litmus-changed").?);
+    try t.expectEqualStrings("2", attribute(line, "litmus-removed").?);
+    try t.expect(attribute("[source,swift]", "litmus-changed") == null);
+    try t.expect(attribute("[source,swift,xlitmus-changed=\"1\"]", "litmus-changed") == null);
+}
+
+test "A9: ranges" {
+    var arena_state = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena_state.deinit();
+    try t.expectEqualStrings("3..7;12", try ranges(arena_state.allocator(), &.{ 3, 4, 5, 6, 7, 12 }));
+    try t.expectEqualStrings("1", try ranges(arena_state.allocator(), &.{1}));
+}
+----
+
+
 === Init, and main
 
 `init` takes the same options as tangle, apart from `--force`. It is given the name Litmus was run as, because the paragraph it writes names that (I1).
@@ -2195,7 +2731,7 @@ defer out.flush() catch {};
 defer err.flush() catch {};
 ----
 
-The first argument selects the command, and the newest are `untangle`, `sync`, `watch`, `style` and `adopt`. An error that escapes a command, such as a failed write, is printed with its name and exits with 1.
+The first argument selects the command, and the newest are `untangle`, `sync`, `watch`, `style`, `adopt` and `blocks`. An error that escapes a command, such as a failed write, is printed with its name and exits with 1.
 
 … main, dispatch :file: main.zig
 [source,zig]
@@ -2210,6 +2746,7 @@ const code = run: {
     if (std.mem.eql(u8, command, "watch")) break :run watchCommand(ctx, rest);
     if (std.mem.eql(u8, command, "style")) break :run styleCommand(ctx, rest);
     if (std.mem.eql(u8, command, "adopt")) break :run adoptCommand(ctx, rest);
+    if (std.mem.eql(u8, command, "blocks")) break :run blocksCommand(ctx, rest);
     if (std.mem.eql(u8, command, "guide")) {
         try out.writeAll(guide_text);
         break :run 0;

@@ -1,0 +1,5 @@
+wrote docs/counter.adoc: 2 files, 4 excerpts
+marked 2 blocks that change.diff changed (A9); litmus blocks --changed lists them
+next: read the code, propose an outline of chapters and the order that explains it best, and after it is agreed write the prose; run litmus check after each chapter
+docs/counter.adoc:31  Sources/Counter.swift  Counter  12 lines  changed 3;6
+docs/counter.adoc:48  Sources/Counter.swift  report  3 lines  changed 2  removed 2

@@ -1,0 +1,35 @@
+diff --git a/Sources/Counter.swift b/Sources/Counter.swift
+index 1111111..2222222 100644
+--- a/Sources/Counter.swift
++++ b/Sources/Counter.swift
+@@ -5,8 +5,9 @@ import Foundation
+ struct Counter {
+     var count = 0
++    var step = 2
+ 
+     mutating func add() {
+-        count += 1
++        count += step
+     }
+ 
+     mutating func reset() {
+@@ -16,6 +17,4 @@ struct Counter {
+ 
+ func report(_ counter: Counter) -> String {
+-    let text = "count: \(counter.count)"
+-    print(text)
+-    return text
++    return "count: \(counter.count)"
+ }
+diff --git a/Sources/Gone.swift b/Sources/Gone.swift
+deleted file mode 100644
+--- a/Sources/Gone.swift
++++ /dev/null
+@@ -1 +0,0 @@
+-let gone = true
+diff --git a/Elsewhere.txt b/Elsewhere.txt
+new file mode 100644
+--- /dev/null
++++ b/Elsewhere.txt
+@@ -0,0 +1 @@
++not adopted
