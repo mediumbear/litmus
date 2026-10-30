@@ -168,7 +168,9 @@ wc -l < changed.txt
 ```
 
 If a file name has spaces, pass the files without `$(...)`, quoted one by one. Adopt skips
-files that are not text. `changed.txt` has one line per changed block: where it is, its
+files that are not text. It refuses, and writes nothing, when a file does not end with a
+newline or has a line that starts with `…` or `include::`: leave such files out of
+`files.txt`, run adopt again, and name them in the brief as not shown. `changed.txt` has one line per changed block: where it is, its
 file, its name, its size, and the changed lines counted from its first line.
 
 ## 5. Read, then propose an outline

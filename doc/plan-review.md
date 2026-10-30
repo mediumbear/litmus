@@ -292,3 +292,12 @@ While it works, it keeps tool output small:
 ## Decided
 
 The user agreed: `reader.md`; three.js pinned at r147 rather than `litmus serve`; a snapshot of the changed files rather than the live repository; and `litmus setup` as a command of its own, with `init` left as it is.
+
+## As Built
+
+- The review skill is `share/review-skill.md`, beside the kit, and not in the book: its examples start lines with `…`, which a labeled block cannot hold (L4). `build.zig` embeds it, the weave, the kit and `render.sh` for `setup`, and the self test copies them next to the tangled sources.
+- The kit's sandbox drags items with the browser's own drag and drop, so it does not need Konva. Konva is still pinned and cached, for a canvas picture made by hand.
+- Mermaid is pinned at 11.17.2, the last 11.x, which animates edges. Every library is pinned at a release at least two weeks old: dagre 3.1.1, Konva 10.7.1, three.js r147.
+- In a narrow window Asciidoctor wraps long lines, so the weave measures where each line of a listing really is before it lights it.
+- The golden cases under `test/cases` lacked their expected `.litmus/map` files in this checkout, because `.gitignore` excluded every `.litmus/`. `.gitignore` now lets them in. The 34 cases that already failed for that reason still fail, and no others do.
+
