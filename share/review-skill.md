@@ -30,7 +30,9 @@ Go on only if the user says to continue here.
 - **The only commands you run** are: `git` to read (`diff`, `show`, `log`, `merge-base`,
   `ls-files`, `cat-file`, `rev-parse`, `symbolic-ref`, and `fetch` for a pull request);
   `gh pr view` and `gh pr diff`; `litmus`; `~/.litmus/render.sh`; and `mkdir`, `cp`,
-  `ls`, `wc`, `sed -n` and `head` inside the review folder.
+  `ls`, `wc`, `sed -n` and `head` inside the review folder or `~/.litmus`.
+  `render.sh` installs Asciidoctor and downloads the pinned libraries into
+  `~/.litmus/cache` the first time; that is expected, and never touches the project.
 - **Never write to the repository.** Everything goes in the review folder. `git fetch`
   only adds objects; say so when you run it.
 - **Keep output small.** Send long output to a file in the review folder and print a
@@ -90,7 +92,14 @@ Every time, offer the three levels with the reader's default first:
 `REPO` is the name of the repository's top folder. The review folder `R` is
 `~/.litmus/reviews/REPO/SLUG/`, where SLUG is `pr-123`, `branch-NAME` or
 `wip-NAME-YYYYMMDD-HHMM`, with `/` in a branch name made `-`. If `R` exists, ask whether
-to replace it or to add `-2`. Then make `R/code/`.
+to replace it or to add `-2`. Then set it in the shell and make `R/code/`:
+
+```bash
+R=~/.litmus/reviews/REPO/SLUG; N=123      # N only for a pull request
+mkdir -p "$R/code"
+```
+
+The commands below write `R` for `"$R"` and `N` for `$N`.
 
 Each case writes `R/change.diff`, `R/files.txt` (the changed files that still exist, one
 per line) and a snapshot of those files under `R/code/`, as they are after the change.
@@ -170,7 +179,9 @@ wc -l < changed.txt
 If a file name has spaces, pass the files without `$(...)`, quoted one by one. Adopt skips
 files that are not text. It refuses, and writes nothing, when a file does not end with a
 newline or has a line that starts with `…` or `include::`: leave such files out of
-`files.txt`, run adopt again, and name them in the brief as not shown. `changed.txt` has one line per changed block: where it is, its
+`files.txt`, run adopt again, and add a `## Not shown` section to `brief.md` that names
+them. The brief can change at any time; adopt only records its name. Explain their
+diffs in prose. `changed.txt` has one line per changed block: where it is, its
 file, its name, its size, and the changed lines counted from its first line.
 
 ## 5. Read, then propose an outline
@@ -246,7 +257,8 @@ are still missing. Write one chapter at a time, and after each:
 litmus assemble skeleton.adoc template.adoc review.adoc && litmus check -o code review.adoc
 ```
 
-Fix what they report. They print a few lines; do not print the document.
+Fix what they report. Assemble prints one line; check prints nothing when it passes.
+Do not print the document.
 
 ## 7. Pictures
 
@@ -262,7 +274,10 @@ Choose by the reader's order of visuals, and give each its job:
 | Mermaid | structure that does not move: types, a state machine, a call graph |
 
 Every step has one sentence of narration (`say`), and may light the lines it talks
-about: `code: 'NAME 3..7'`, counted from the block's first line, as in `changed.txt`. Put
+about: `code: 'NAME 3..7'`, counted from the block's first line, as in `changed.txt`.
+NAME is the block's name, or the file's path for a file root (`(file root)` in
+`changed.txt`). Adopt splits code at declarations; a long block (a whole Ruby or Python
+module, say) is placed once, and steps in several chapters light ranges of it. Put
 each widget in a passthrough block. Load `kit.js` once, before the first widget; the
 other scripts before the widget that needs them:
 
