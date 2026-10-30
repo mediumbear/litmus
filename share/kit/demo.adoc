@@ -1,0 +1,164 @@
+= The Widget Kit
+:toc: left
+
+One of each widget of the Litmus kit, as a test page and as examples to copy. Render it with `~/.litmus/render.sh share/kit/demo.adoc` and open `share/kit/build/demo.html`: it works from `file://`, with no network.
+
+The listing below is labeled, so the widgets can light its lines.
+
+… read :file: demo/TokenService.swift
+[source,swift,litmus-changed="4..6"]
+----
+func value(for key: Key) -> String? {
+    if let cached = cache[key] { return cached }
+    switch store.read(key) {
+    case .value(let v): cache[key] = v; return v
+    case .missing: cache[key] = .some(nil); return nil
+    case .locked: return nil
+    }
+}
+----
+
+== Stepper
+
+++++
+<div id="demo-stepper"></div>
+<script src="assets/kit/kit.js"></script>
+<script src="assets/kit/stepper.js"></script>
+<script>
+LitmusKit.stepper('#demo-stepper', {
+  title: 'Reading a token',
+  boxes: [
+    { id: 'cache', label: 'Memory cache', value: 'empty' },
+    { id: 'keychain', label: 'Keychain', value: 'token' },
+    { id: 'caller', label: 'Caller' },
+  ],
+  arrows: [{ from: 'cache', to: 'keychain', label: 'miss' }, { from: 'keychain', to: 'caller', label: 'value' }],
+  token: 'read',
+  steps: [
+    { say: '<code>value(for:)</code> starts at the cache.', at: 'cache', code: 'read 2' },
+    { say: 'The cache is empty, so the read goes to the keychain.', at: 'keychain', arrow: 'cache>keychain', code: 'read 3' },
+    { say: 'The keychain has the token. It goes into the cache on the way out.', set: { cache: 'token' }, good: ['keychain'], token: 'token', code: 'read 4' },
+    { say: 'The caller gets the token.', at: 'caller', arrow: 'keychain>caller', set: { caller: 'token' } },
+  ],
+});
+</script>
+++++
+
+== Flow
+
+++++
+<div id="demo-flow"></div>
+<script src="assets/vendor/dagre.min.js"></script>
+<script src="assets/kit/flow.js"></script>
+<script>
+LitmusKit.flow('#demo-flow', {
+  title: 'Where a token goes',
+  nodes: [
+    { id: 'login', label: 'Sign in', kind: 'external' },
+    { id: 'service', label: 'TokenService' },
+    { id: 'locked', label: 'Locked?', kind: 'decision' },
+    { id: 'keychain', label: 'Keychain', kind: 'store' },
+    { id: 'defaults', label: 'UserDefaults', kind: 'store', value: 'old token' },
+  ],
+  edges: [
+    { from: 'login', to: 'service', label: 'token' },
+    { from: 'service', to: 'locked' },
+    { from: 'locked', to: 'keychain', label: 'no' },
+    { from: 'defaults', to: 'service', label: 'migrate' },
+  ],
+  steps: [
+    { say: 'An old token waits in <code>UserDefaults</code>.', flash: ['defaults'] },
+    { say: 'The first read moves it to the service, and deletes the old copy.', send: { from: 'defaults', to: 'service', value: 'old token' }, set: { defaults: '' } },
+    { say: 'Sign in brings a new token.', send: { from: 'login', to: 'service', value: 'new' } },
+    { say: 'Is the device locked? A write must wait until it is not.', send: { from: 'service', to: 'locked', value: 'new' } },
+    { say: 'Unlocked: the token is written to the keychain.', send: { from: 'locked', to: 'keychain', value: 'new' }, set: { keychain: 'new' }, good: ['keychain'], code: 'read 4' },
+    { say: 'Locked later: a read fails, and nothing is thrown away.', fail: ['keychain'], code: 'read 6' },
+  ],
+});
+</script>
+++++
+
+== Timeline
+
+++++
+<div id="demo-timeline"></div>
+<script src="assets/kit/timeline.js"></script>
+<script>
+LitmusKit.timeline('#demo-timeline', {
+  title: 'A day of the device lock',
+  states: { BFU: { label: 'Before first unlock', color: '#7c3aed' }, AFU: { label: 'Locked', color: '#64748b' }, OPEN: { label: 'Unlocked', color: '#0ea5e9' } },
+  events: [
+    { title: 'Power on', state: 'BFU', say: 'Nobody has entered the passcode yet.' },
+    { title: 'First unlock', state: 'OPEN', say: 'The keys stay in memory until the next reboot.' },
+    { title: 'Silent push', state: 'AFU', say: 'The app wakes in the background and needs the token.', code: 'read 3..4' },
+    { title: 'Open the app', state: 'OPEN', say: 'In front again.' },
+    { title: 'Reboot', state: 'BFU', say: 'Every key is gone until the passcode is entered.', code: 'read 6' },
+  ],
+  lanes: [
+    { id: 'when', label: 'WhenUnlocked', values: ['idle', 'idle', 'fail', 'ok', 'fail'] },
+    { id: 'after', label: 'AfterFirstUnlock (chosen)', values: ['idle', 'idle', 'ok', 'ok', 'fail'], note: 'Before the first unlock nothing can be read.' },
+  ],
+  focus: 'after',
+});
+</script>
+++++
+
+== Sandbox
+
+++++
+<div id="demo-sandbox"></div>
+<script src="assets/kit/sandbox.js"></script>
+<script>
+LitmusKit.sandbox('#demo-sandbox', {
+  title: 'Upgrades and reinstalls',
+  state: { defaults: ['token'], keychain: [], installed: true },
+  boxes: [
+    { id: 'defaults', label: 'UserDefaults' },
+    { id: 'keychain', label: 'Keychain' },
+  ],
+  actions: [
+    { label: 'Launch', when: s => s.installed, run: s => { if (s.defaults.length) { s.keychain = s.defaults; s.defaults = []; return 'The token moves to the keychain.'; } return 'Nothing to move.'; } },
+    { label: 'Delete the app', when: s => s.installed, run: s => { s.defaults = []; s.installed = false; return 'UserDefaults goes; the keychain stays.'; } },
+    { label: 'Install again', when: s => !s.installed, run: s => { s.installed = true; if (s.wipe) { s.keychain = []; return 'First launch: the old keychain items are deleted.'; } return 'The old token is still in the keychain!'; } },
+  ],
+  switches: [{ key: 'wipe', label: 'Delete leftovers on first launch', value: true }],
+  drop: (s, item, from, to) => { s[from] = s[from].filter(x => x !== item); s[to] = s[to].concat([item]); return 'Moved by hand.'; },
+  result: s => !s.installed ? { text: 'Not installed', tone: 'neutral' } : s.keychain.length ? { text: 'Signed in', tone: 'good' } : { text: 'Signed out', tone: 'neutral' },
+  presets: [{ label: 'Reinstall', actions: ['Launch', 'Delete the app', 'Install again'] }],
+});
+</script>
+++++
+
+== Layers in 3D
+
+++++
+<div id="demo-layers"></div>
+<script src="assets/vendor/three.min.js"></script>
+<script src="assets/vendor/OrbitControls.js"></script>
+<script src="assets/kit/layers3d.js"></script>
+<script>
+LitmusKit.layers3d('#demo-layers', {
+  layers: [
+    { id: 'cache', label: 'Memory cache', color: '#38bdf8' },
+    { id: 'keychain', label: 'Keychain', color: '#22c55e' },
+    { id: 'defaults', label: 'UserDefaults', color: '#f97316' },
+  ],
+  token: 'read',
+  steps: [
+    { say: 'A read starts above the stack.', at: null },
+    { say: 'The cache is empty: the read falls through.', at: 'cache', pass: true, code: 'read 2' },
+    { say: 'The keychain answers.', at: 'keychain', good: true, token: 'token', code: 'read 4' },
+  ],
+});
+</script>
+++++
+
+== A diagram
+
+++++
+<pre class="mermaid">
+flowchart LR
+  read e1@--> cache -->|miss| keychain
+  e1@{ animate: true }
+</pre>
+++++

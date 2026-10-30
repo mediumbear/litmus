@@ -5,3 +5,4 @@ zig-out/
 .zig-cache/
 .litmus/
 !test/cases/**/.litmus/
+share/kit/build/
