@@ -76,7 +76,7 @@ run_cmd.addPassthruArgs();
 b.step("run", "Run litmus").dependOn(&run_cmd.step);
 ----
 
-The unit tests are compiled from `src/tests.zig`, which imports every source file.
+The unit tests are compiled from `src/tests.zig`, which imports every source file. `litmus setup` carries files that are not Zig and live outside `src/`: the review skill, the weave, the widget kit, and the script that renders (H2). Both modules get each of them as an anonymous import, so that `@embedFile` finds it by its name.
 
 … build, unit tests :file: build.zig
 [source,zig]
@@ -86,6 +86,21 @@ const test_module = b.createModule(.{
     .target = target,
     .optimize = optimize,
 });
+// `litmus setup` carries the review skill, the weave, the widget kit and the script that renders (H2).
+const carried = [_][2][]const u8{
+    .{ "litmus-weave.rb", "doc/litmus-weave.rb" },
+    .{ "review-skill.md", "share/review-skill.md" },
+    .{ "render.sh", "share/render.sh" },
+    .{ "kit.js", "share/kit/kit.js" },
+    .{ "stepper.js", "share/kit/stepper.js" },
+    .{ "flow.js", "share/kit/flow.js" },
+    .{ "timeline.js", "share/kit/timeline.js" },
+    .{ "sandbox.js", "share/kit/sandbox.js" },
+    .{ "layers3d.js", "share/kit/layers3d.js" },
+};
+for ([_]*std.Build.Module{ litmus, test_module }) |module| {
+    for (carried) |file| module.addAnonymousImport(file[0], .{ .root_source_file = b.path(file[1]) });
+}
 const tests = b.addTest(.{ .root_module = test_module });
 const test_step = b.step("test", "Run the unit tests, and check that the book still tangles to the sources");
 test_step.dependOn(&b.addRunArtifact(tests).step);
@@ -178,6 +193,7 @@ test {
     _ = @import("adopt.zig");
     _ = @import("marks.zig");
     _ = @import("assemble.zig");
+    _ = @import("setup.zig");
 }
 ----
 
@@ -252,7 +268,7 @@ expect_same() {
 
 === Golden cases
 
-A case with a file `cmd` is an init case, and one with a directory `edit` is an untangle case. The others tangle. A small function runs the command of an init case, with Litmus reachable under the name the command uses: on the `PATH`, or at a relative path such as `tools/litmus` (I1).
+A case with a file `cmd` is an init case, and one with a directory `edit` is an untangle case. The others tangle. A small function runs the command of an init case, with Litmus reachable under the name the command uses: on the `PATH`, or at a relative path such as `tools/litmus` (I1). The name is the command's first word that is not an assignment, so a command can set the environment first, as the case for setup does with `LITMUS_HOME=home`.
 
 … run_init :file: test/run.sh
 [source,bash]
@@ -260,7 +276,9 @@ A case with a file `cmd` is an init case, and one with a directory `edit` is an 
 # Runs the command of an init case in the sandbox, with Litmus reachable under the
 # name the command uses: on the PATH, or at a relative path such as tools/litmus.
 run_init() {
-  local sandbox=$1 cmd=$2 first=${2%% *}
+  local sandbox=$1 cmd=$2 first
+  # The first word that is not an assignment, such as LITMUS_HOME=home, names Litmus.
+  for first in $cmd; do [[ $first == *=* ]] || break; done
   rm -rf "$work/bin" && mkdir -p "$work/bin"
   if [[ $first == */* ]]; then
     mkdir -p "$sandbox/$(dirname "$first")"
@@ -654,7 +672,7 @@ speed() {
 
 === The self test
 
-The self test tangles the book into a temporary directory with the Litmus it was given, and compares each file the map lists with the one in the repository. Then it builds a Litmus from the tangled directory with the Zig in `tools/zig`, runs its unit tests, and tangles the book with it into a second directory. The second set of files must equal the repository's too, and the two maps must be equal, which is the fixed point.
+The self test tangles the book into a temporary directory with the Litmus it was given, and compares each file the map lists with the one in the repository. Then it builds a Litmus from the tangled directory with the Zig in `tools/zig`, with the weave and `share/` copied in, since the build embeds them and the book does not hold them, runs its unit tests, and tangles the book with it into a second directory. The second set of files must equal the repository's too, and the two maps must be equal, which is the fixed point.
 
 … self :file: test/run.sh
 [source,bash]
@@ -664,6 +682,8 @@ self() {
   local book=doc/implementation.adoc one=$work/one two=$work/two
   (cd "$root" && "$litmus" tangle -o "$one" "$book") || fail self "the book does not tangle"
   compare_with_repo self-one "$one"
+  # What `litmus setup` carries is not in the book, but the build embeds it (H2).
+  mkdir -p "$one/doc" && cp "$root/doc/litmus-weave.rb" "$one/doc/" && cp -R "$root/share" "$one/share"
   (cd "$one" && "$root/tools/zig/zig" build test && "$root/tools/zig/zig" build) || fail self "the tangled sources do not build and pass their tests"
   (cd "$root" && "$one/zig-out/bin/litmus" tangle -o "$two" "$book") || fail self "the second Litmus does not tangle the book"
   compare_with_repo self-two "$two"

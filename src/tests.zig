@@ -17,4 +17,5 @@ test {
     _ = @import("adopt.zig");
     _ = @import("marks.zig");
     _ = @import("assemble.zig");
+    _ = @import("setup.zig");
 }

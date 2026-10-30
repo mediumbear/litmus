@@ -15,6 +15,7 @@ const watch = @import("watch.zig");
 const adopt = @import("adopt.zig");
 const marks = @import("marks.zig");
 const assemble = @import("assemble.zig");
+const setup = @import("setup.zig");
 
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
@@ -31,6 +32,7 @@ const usage =
     \\       litmus style DOCUMENT...
     \\       litmus blocks [--changed] DOCUMENT...
     \\       litmus assemble SKELETON TEMPLATE OUTPUT
+    \\       litmus setup
     \\       litmus adopt [-o DIR] [--companion] [--style FILE] [--diff FILE] DOCUMENT PATH...
     \\
 ;
@@ -899,6 +901,20 @@ fn assembleWith(ctx: Context, set: docset.Set, files: []const tangle.Tangled, te
     return 0;
 }
 
+/// H1 to H3: the review skill, and the home of Litmus.
+fn setupCommand(ctx: Context, env: *const std.process.Environ.Map, args: []const []const u8) !u8 {
+    const options = (try parseOptions(ctx, args, .{})) orelse return 2;
+    if (options.positional.len > 0 or !std.mem.eql(u8, options.out_dir, ".")) {
+        try ctx.err.writeAll(usage);
+        return 2;
+    }
+    const dirs = (try setup.dirs(ctx.arena, env)) orelse {
+        try ctx.err.writeAll("litmus: setup needs HOME, or LITMUS_HOME and CLAUDE_CONFIG_DIR (H1)\n");
+        return 1;
+    };
+    return setup.run(ctx.io, ctx.arena, dirs, ctx.out, ctx.err);
+}
+
 fn initCommand(ctx: Context, exe: []const u8, args: []const []const u8) !u8 {
     const options = (try parseOptions(ctx, args, .{})) orelse return 2;
     if (!try documentsOk(ctx, options.positional)) return 2;
@@ -938,6 +954,7 @@ pub fn main(init: std.process.Init) !u8 {
         if (std.mem.eql(u8, command, "adopt")) break :run adoptCommand(ctx, rest);
         if (std.mem.eql(u8, command, "blocks")) break :run blocksCommand(ctx, rest);
         if (std.mem.eql(u8, command, "assemble")) break :run assembleCommand(ctx, rest);
+        if (std.mem.eql(u8, command, "setup")) break :run setupCommand(ctx, init.environ_map, rest);
         if (std.mem.eql(u8, command, "guide")) {
             try out.writeAll(guide_text);
             break :run 0;

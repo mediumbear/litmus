@@ -40,7 +40,10 @@ Lists the labeled blocks of the documents, one line each.
 `litmus assemble SKELETON TEMPLATE OUTPUT`::
 Writes a document from a template of prose and the blocks of a skeleton.
 
-`main.zig` reads the command line and runs the right command. `compare.zig` is the comparison that `check` makes, `marks.zig` reads a diff for adopt, `assemble.zig` makes a document from a template, and `init.zig` is init. The text of the guide is a file of its own, which the program carries inside it.
+`litmus setup`::
+Installs the review skill, the weave and the widget kit for the user.
+
+`main.zig` reads the command line and runs the right command. `compare.zig` is the comparison that `check` makes, `marks.zig` reads a diff for adopt, `assemble.zig` makes a document from a template, `setup.zig` is setup, and `init.zig` is init. The text of the guide is a file of its own, which the program carries inside it.
 
 === The command line
 
@@ -101,12 +104,14 @@ Writes a document from a template of prose and the blocks of a skeleton.
 
 … assembleWith
 
+… setupCommand
+
 … initCommand
 
 … main
 ----
 
-The file imports every stage, since it is where they meet. Untangle, sync, watch, adopt, the marks of a diff and assemble come last.
+The file imports every stage, since it is where they meet. Untangle, sync, watch, adopt, the marks of a diff, assemble and setup come last.
 
 … header :file: main.zig
 [source,zig]
@@ -128,6 +133,7 @@ const watch = @import("watch.zig");
 const adopt = @import("adopt.zig");
 const marks = @import("marks.zig");
 const assemble = @import("assemble.zig");
+const setup = @import("setup.zig");
 
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
@@ -150,6 +156,7 @@ const usage =
     \\       litmus style DOCUMENT...
     \\       litmus blocks [--changed] DOCUMENT...
     \\       litmus assemble SKELETON TEMPLATE OUTPUT
+    \\       litmus setup
     \\       litmus adopt [-o DIR] [--companion] [--style FILE] [--diff FILE] DOCUMENT PATH...
     \\
 ;
@@ -3318,7 +3325,7 @@ defer out.flush() catch {};
 defer err.flush() catch {};
 ----
 
-The first argument selects the command, and the newest are `untangle`, `sync`, `watch`, `style`, `adopt`, `blocks` and `assemble`. An error that escapes a command, such as a failed write, is printed with its name and exits with 1.
+The first argument selects the command, and the newest are `untangle`, `sync`, `watch`, `style`, `adopt`, `blocks`, `assemble` and `setup`. Setup gets the environment as well. An error that escapes a command, such as a failed write, is printed with its name and exits with 1.
 
 … main, dispatch :file: main.zig
 [source,zig]
@@ -3335,6 +3342,7 @@ const code = run: {
     if (std.mem.eql(u8, command, "adopt")) break :run adoptCommand(ctx, rest);
     if (std.mem.eql(u8, command, "blocks")) break :run blocksCommand(ctx, rest);
     if (std.mem.eql(u8, command, "assemble")) break :run assembleCommand(ctx, rest);
+    if (std.mem.eql(u8, command, "setup")) break :run setupCommand(ctx, init.environ_map, rest);
     if (std.mem.eql(u8, command, "guide")) {
         try out.writeAll(guide_text);
         break :run 0;
@@ -3929,7 +3937,7 @@ test "I3: .gitignore gets the directory once" {
 
 The guide is what `litmus guide` prints. Agents read it before they change a tangled file. It tells them how to find their way (`.litmus/map`, `litmus where`), how to change code so that the documents and the files stay equal, and what never to do. Changing code now goes through untangle: the agent edits and tests the tangled file, runs untangle, writes the prose it asks for, and checks. If watch is running, it does the untangling on every save, and the agent only has to read its output. The guide also says what to do when untangle cannot place a line, or finds that the documents changed too. It is written for an agent, in plain words and short sentences.
 
-It also tells agents to read the style of a document before writing its prose, that every `next:` line says what to do, and where the steps for documents of existing code are.
+It also tells agents to read the style of a document before writing its prose, that every `next:` line says what to do, where the steps for documents of existing code are, and what `litmus setup` and the review skill are for.
 
 The spec includes this file, so the text exists once.
 
@@ -3981,6 +3989,12 @@ Documents for existing code
 declarations. The steps are in the skill litmus-document, which `litmus init`
 installs: adopt, check, propose an outline and wait for the user, write each
 chapter in the style of the brief, check after each, and render.
+
+Reviewing a change
+`litmus setup` installs the skill litmus-review for the user, with the weave and
+the widgets it renders with. It explains a pull request, uncommitted work or a
+branch's own commits in a document kept outside the repository, using
+`adopt --diff`, `blocks` and `assemble`, and it never builds or runs the project.
 
 If untangle reports a line it cannot place, the line lost the indent of its
 excerpt: fix it in the tangled file and run untangle again. If it says that the
@@ -4060,3 +4074,167 @@ to do: usually, write prose for the blocks that grew, in the style of the brief.
 - start a line of code with `…` (U+2026);
 - use `--force` unless the user asks.
 ----
+
+=== Setup and the review skill
+
+Some of what Litmus brings belongs to the user rather than to a project: a skill for reviewing changes that works in every repository, and the weave, the widgets and the script that render a review with no network. `litmus setup` installs them (H1 to H3). Unlike init, it takes no documents and no `-o`, and it reads its directories from the environment, which `main` passes to it.
+
+… setupCommand :file: main.zig
+[source,zig]
+----
+/// H1 to H3: the review skill, and the home of Litmus.
+fn setupCommand(ctx: Context, env: *const std.process.Environ.Map, args: []const []const u8) !u8 {
+    const options = (try parseOptions(ctx, args, .{})) orelse return 2;
+    if (options.positional.len > 0 or !std.mem.eql(u8, options.out_dir, ".")) {
+        try ctx.err.writeAll(usage);
+        return 2;
+    }
+    const dirs = (try setup.dirs(ctx.arena, env)) orelse {
+        try ctx.err.writeAll("litmus: setup needs HOME, or LITMUS_HOME and CLAUDE_CONFIG_DIR (H1)\n");
+        return 1;
+    };
+    return setup.run(ctx.io, ctx.arena, dirs, ctx.out, ctx.err);
+}
+----
+
+`setup.zig` holds the files and writes them. The texts are embedded in the program, so the files always match the Litmus that installed them, and setup needs no network (H3).
+
+… :file: setup.zig
+[source,zig]
+----
+… setup header
+
+… setup files
+
+… setup dirs
+
+… setup run
+
+… setup tests
+----
+
+It reads and writes files with the helpers of `output.zig`, which write atomically.
+
+… setup header :file: setup.zig
+[source,zig]
+----
+//! The `setup` command (H1 to H3): installs what Litmus brings for the user rather than
+//! for a project: the review skill, and the weave, the widget kit and the script that
+//! renders a review without a network.
+
+const std = @import("std");
+const output = @import("output.zig");
+
+const Allocator = std.mem.Allocator;
+const Io = std.Io;
+----
+
+Each file has a path relative to its directory. `render.sh` is written executable, as it is run by path. The weave, the kit and the script live outside `src/`, in `doc/` and `share/`, so `build.zig` makes each of them importable by its name, and `@embedFile` takes them by that name.
+
+… setup files :file: setup.zig
+[source,zig]
+----
+/// A file that setup writes, relative to the directory it belongs in.
+pub const File = struct { path: []const u8, text: []const u8, executable: bool = false };
+
+/// H2: the files of the home of Litmus. `build.zig` makes them importable by these names.
+pub const home_files = [_]File{
+    .{ .path = "render.sh", .text = @embedFile("render.sh"), .executable = true },
+    .{ .path = "weave/litmus-weave.rb", .text = @embedFile("litmus-weave.rb") },
+    .{ .path = "kit/kit.js", .text = @embedFile("kit.js") },
+    .{ .path = "kit/stepper.js", .text = @embedFile("stepper.js") },
+    .{ .path = "kit/flow.js", .text = @embedFile("flow.js") },
+    .{ .path = "kit/timeline.js", .text = @embedFile("timeline.js") },
+    .{ .path = "kit/sandbox.js", .text = @embedFile("sandbox.js") },
+    .{ .path = "kit/layers3d.js", .text = @embedFile("layers3d.js") },
+};
+
+/// H2: the skill, in Claude Code's directory.
+pub const skill = File{ .path = "skills/litmus-review/SKILL.md", .text = @embedFile("review-skill.md") };
+----
+
+The home of Litmus is `$LITMUS_HOME`, or `.litmus` in the user's home; Claude Code's directory is `$CLAUDE_CONFIG_DIR`, or `.claude` (H1). Without `HOME` and without the variables there is nowhere to put them.
+
+… setup dirs :file: setup.zig
+[source,zig]
+----
+pub const Dirs = struct { home: []const u8, claude: []const u8 };
+
+/// H1: the home of Litmus and Claude Code's directory, from the environment. Null when a
+/// directory is not set and there is no `HOME` to put it in.
+pub fn dirs(arena: Allocator, env: *const std.process.Environ.Map) !?Dirs {
+    const home = env.get("HOME");
+    const litmus = env.get("LITMUS_HOME") orelse if (home) |h| try std.fs.path.join(arena, &.{ h, ".litmus" }) else return null;
+    const claude = env.get("CLAUDE_CONFIG_DIR") orelse if (home) |h| try std.fs.path.join(arena, &.{ h, ".claude" }) else return null;
+    return .{ .home = litmus, .claude = claude };
+}
+----
+
+`run` treats the skill and the home's files alike: a file that is missing is created, one that differs is replaced, and one that is the same is left alone, so that a second run prints nothing (H3). A failure is reported and the others are still tried, as init does. Nothing else is touched: the reader's file, the cache and the reviews are never written.
+
+… setup run :file: setup.zig
+[source,zig]
+----
+/// H2, H3: writes each file that is missing or differs, and says so. Nothing else is touched.
+pub fn run(io: Io, arena: Allocator, d: Dirs, out: *Io.Writer, err: *Io.Writer) !u8 {
+    const cwd = Io.Dir.cwd();
+    var failed = false;
+    const Target = struct { dir: []const u8, file: File };
+    var targets: [home_files.len + 1]Target = undefined;
+    targets[0] = .{ .dir = d.claude, .file = skill };
+    for (home_files, 1..) |file, i| targets[i] = .{ .dir = d.home, .file = file };
+    for (targets) |target| {
+        const path = try std.fs.path.join(arena, &.{ target.dir, target.file.path });
+        const existing = output.readOrNull(io, arena, cwd, path) catch |e| {
+            try err.print("{s}: {s}\n", .{ path, @errorName(e) });
+            failed = true;
+            continue;
+        };
+        if (existing) |text| if (std.mem.eql(u8, text, target.file.text)) continue;
+        output.writeAtomic(io, cwd, path, target.file.text, target.file.executable) catch |e| {
+            try err.print("{s}: {s}\n", .{ path, @errorName(e) });
+            failed = true;
+            continue;
+        };
+        try out.print("{s} {s}\n", .{ if (existing == null) "created" else "updated", path });
+    }
+    return if (failed) 1 else 0;
+}
+----
+
+The tests read the directories from a made-up environment, with and without the variables, and check that every embedded file is there. The golden case `setup` runs it twice, over a home that has an older `kit.js` and a reader's file, which must stay as it was.
+
+… setup tests :file: setup.zig
+[source,zig]
+----
+// Tests ----------------------------------------------------------------------
+
+const t = std.testing;
+
+test "H1: the directories come from the environment, or from HOME" {
+    var arena_state = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var env = std.process.Environ.Map.init(a);
+    try t.expect(try dirs(a, &env) == null);
+    try env.put("HOME", "/Users/me");
+    const plain = (try dirs(a, &env)).?;
+    try t.expectEqualStrings("/Users/me/.litmus", plain.home);
+    try t.expectEqualStrings("/Users/me/.claude", plain.claude);
+    try env.put("LITMUS_HOME", "/opt/litmus");
+    try env.put("CLAUDE_CONFIG_DIR", "/tmp/claude");
+    const set = (try dirs(a, &env)).?;
+    try t.expectEqualStrings("/opt/litmus", set.home);
+    try t.expectEqualStrings("/tmp/claude", set.claude);
+}
+
+test "H2: the skill and the files of the home are there" {
+    try t.expect(std.mem.startsWith(u8, skill.text, "---\nname: litmus-review\n"));
+    try t.expect(std.mem.startsWith(u8, home_files[0].text, "#!/usr/bin/env bash\n"));
+    for (home_files) |file| try t.expect(file.text.len > 0);
+}
+----
+
+The skill `litmus-review` is what an agent reads when a user asks to understand a change an AI made. It takes the change from a pull request, the uncommitted work, or the branch's own commits, and makes a companion document of a snapshot of the changed files, outside the repository. The steps are built around what the first hand-made review taught: adopt marks the changed blocks, so the writing starts from them; `blocks` and `assemble` keep the agent from reading or writing code it does not need to; the widget kit turns a picture into a few lines of data; and the skill opens by suggesting a fresh session, since a document written at the end of a long one costs much more. It never builds or runs the project, and says which commands it may run.
+
+The skill is in `share/review-skill.md`, with the kit, rather than in this book. Its examples show placeholders and `… :rest:` as an agent should write them, at the start of a line, and a labeled block cannot hold such a line (L4).
