@@ -1,0 +1,5 @@
+litmus map 1
+file	crlf.txt	7e5ede417cc8929081680f6aca25bcc37334d89690886633f65b9b40d3dc4a25
+1	1	crlf.adoc	5	0	:file:
+2	1	crlf.adoc	12	2	body
+3	1	crlf.adoc	7	0	:file:

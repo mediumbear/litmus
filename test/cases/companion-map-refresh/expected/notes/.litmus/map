@@ -1,0 +1,8 @@
+litmus map 1
+file	counter.zig	d15898f13c2c697e3fb472fbafd582e5ed61d9c548dece3e2adb20d0b878a2bc
+1	2	notes/c.adoc	16	0	:file:
+3	1	notes/c.adoc	28	0	std
+4	1	notes/c.adoc	19	0	:file:
+5	3	notes/c.adoc	34	0	add
+8	1	notes/c.adoc	21	0	:file:
+9	3	notes/c.adoc	42	0	test adds

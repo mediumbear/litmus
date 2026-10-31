@@ -1,0 +1,6 @@
+litmus map 1
+file	hello.zig	2bc975ea988a6520d4c5937fbec6d64a98ce153bb2dc852c50affe981da286c2
+1	1	hello.adoc	24	0	imports
+2	2	hello.adoc	7	0	:file:
+4	1	hello.adoc	18	4	greet
+5	1	hello.adoc	10	0	:file:

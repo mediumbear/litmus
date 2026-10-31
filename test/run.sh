@@ -45,9 +45,9 @@ run_init() {
   return $code
 }
 
-# A case with an `edit` directory is an untangle case. The documents are tangled into the
-# output, or the output starts as `before`. Then the files of `edit` are copied over the
-# output, those named in `remove` are removed, and untangle has to give the documents
+# A case with an `edit` directory or a `remove` file is an untangle case. The documents are
+# tangled into the output, or the output starts as `before`. Then the files of `edit` are
+# copied over the output, those named in `remove` are removed, and untangle has to give the documents
 # in `expected`. Options for untangle go in `options`.
 untangle_case() {
   local dir=$1 name=$2 sandbox=$work/sandbox out=$work/out args options="" want_exit=0 code path
@@ -62,7 +62,7 @@ untangle_case() {
   else
     (cd "$sandbox" && "$litmus" tangle -o "$out" $args) > /dev/null 2>&1 || fail "$name" "the documents do not tangle"
   fi
-  cp -R "$dir/edit/." "$out/"
+  [ -d "$dir/edit" ] && cp -R "$dir/edit/." "$out/"
   [ -f "$dir/remove" ] && while read -r path; do rm -f "$out/$path"; done < "$dir/remove"
   (cd "$sandbox" && "$litmus" untangle -o "$out" $options $args) > "$work/stdout" 2> "$work/stderr"
   code=$?
@@ -158,7 +158,7 @@ cases() {
     count=$((count + 1))
     if [ -f "$dir/cmd" ]; then
       init_case "$dir" "$name"
-    elif [ -d "$dir/edit" ]; then
+    elif [ -d "$dir/edit" ] || [ -f "$dir/remove" ]; then
       untangle_case "$dir" "$name"
     else
       tangle_case "$dir" "$name"
