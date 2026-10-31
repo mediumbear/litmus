@@ -4,7 +4,7 @@
 
 A reader of the woven pages often wants to change what they read. Live pages let them select a part in the browser, and then ask an agent about it in their own words: rewrite this, put a diagram above it, split this block into excerpts. Litmus does not talk to the agent. `litmus watch --live` serves the pages and writes down what the reader selected and where it came from, and `litmus selection` gives that to the agent once, when it is asked (E1 to E7).
 
-The pieces are spread over three places. The weave, `doc/litmus-weave.rb`, gives every block of a live page the line it starts at, and adds the script that sends selections (V3). `live.zig`, below, is the small web server that receives them. And `main.zig` starts the server beside watch's loop, weaves the pages again after each run, and has the command that prints the selection.
+The pieces are spread over three places. The weave, `doc/litmus-weave.rb`, gives every block of a live page the line it starts at, and adds the script that sends selections (V6). `live.zig`, below, is the small web server that receives them. And `main.zig` starts the server beside watch's loop, weaves the pages again after each run, and has the command that prints the selection.
 
 ++++
 <pre class="mermaid">
@@ -55,7 +55,7 @@ fn startLive(ctx: Context, options: Options, pages: []const u8) !?*live.State {
 }
 ----
 
-After each run, watch weaves the pages again if `--weave` names a command, and then raises the version that the pages ask for, so that they reload (E2). The weave gets `LITMUS_LIVE`, the absolute path of the current directory, which tells it to make live pages and is where it counts document paths from (V3). The command is split at spaces and run without a shell. A weave that fails is reported and does not stop the watch: the pages stay as they were.
+After each run, watch weaves the pages again if `--weave` names a command, and then raises the version that the pages ask for, so that they reload (E2). The weave gets `LITMUS_LIVE`, the absolute path of the current directory, which tells it to make live pages and is where it counts document paths from (V6). The command is split at spaces and run without a shell. A weave that fails is reported and does not stop the watch: the pages stay as they were.
 
 … runWeave :file: main.zig
 [source,zig]

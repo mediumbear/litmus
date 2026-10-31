@@ -5,10 +5,12 @@
 # - An excerpt command inside a labeled block links to the excerpt it stands for.
 # - The label links back to the command that uses the excerpt.
 # - Characters that Rouge cannot lex are not painted as errors.
-# - Mermaid is loaded when a page has a diagram.
-# - With LITMUS_LIVE set, the pages are live (V3): each block knows where it starts, and a
+# - Mermaid is loaded when a page has a diagram, from `litmus-assets` when that is set (V4).
+# - With LITMUS_LIVE set, the pages are live (V6): each block knows where it starts, and a
 #   script sends selections to `litmus watch --live` and opens tangled files.
 # - With the attribute `litmus-split`, each chapter gets a page of its own.
+# - Lines a diff changed are highlighted, and their sections marked in the table of contents (V3).
+# - Scripts on the page can light lines of a labeled listing: LitmusLines.light (V5).
 
 require 'asciidoctor'
 require 'asciidoctor/extensions'
@@ -20,7 +22,7 @@ module LitmusWeave
   ELLIPSIS = "…"
   Label = Struct.new(:name, :file, :executable, :id, :listing)
 
-  # V3: the directory that live pages name documents from, or nil when the pages are not live.
+  # V6: the directory that live pages name documents from, or nil when the pages are not live.
   def self.live_root
     root = ENV['LITMUS_LIVE']
     root && !root.empty? ? root : nil
@@ -34,9 +36,19 @@ module LitmusWeave
     end
   end
 
+  # V3: the line numbers of ranges such as `3..7;12`.
+  def self.lines_of(ranges)
+    ranges.to_s.split(';').flat_map do |part|
+      a, b = part.strip.split('..', 2)
+      next [] unless a && a =~ /\A\d+\z/
+      b && b =~ /\A\d+\z/ ? (a.to_i..b.to_i).to_a : [a.to_i]
+    end
+  end
+
   class Tree < Asciidoctor::Extensions::Treeprocessor
     @@listings = {}
     @@live = nil
+    @@changed_sections = []
 
     def self.listings
       @@listings
@@ -46,9 +58,14 @@ module LitmusWeave
       @@live
     end
 
+    def self.changed_sections
+      @@changed_sections
+    end
+
     def process(doc)
       @@listings = {}
       @@live = nil
+      @@changed_sections = []
       nodes = doc.find_by { |b| b.context == :paragraph || b.context == :listing }
       labels = []
       pending = nil
@@ -81,16 +98,25 @@ module LitmusWeave
 
       labels.each_with_index do |(para, label), n|
         label.listing.add_role("lm-#{n}")
-        @@listings[n] = { file: label.file, name: label.name, first_id: first_id }
+        changed = label.listing.attr('litmus-changed')
+        removed = label.listing.attr('litmus-removed')
+        @@listings[n] = { file: label.file, name: label.name, first_id: first_id, changed: changed, removed: removed }
+        if changed || removed
+          node = label.listing.parent
+          while node && node.context != :document
+            @@changed_sections << node.id if node.context == :section && node.id
+            node = node.parent
+          end
+        end
         parent = para.parent
         index = parent.blocks.index(para)
-        parent.blocks[index] = Asciidoctor::Block.new(parent, :pass, source: label_html(label, first_id), content_model: :raw)
+        parent.blocks[index] = Asciidoctor::Block.new(parent, :pass, source: label_html(label, first_id, changed, removed), content_model: :raw)
       end
       mark_sources(doc, labels) if LitmusWeave.live_root
       doc
     end
 
-    # V3: each block that has a wrapper of its own gets a role `lm-at-K`, and the table says
+    # V6: each block that has a wrapper of its own gets a role `lm-at-K`, and the table says
     # where block K starts: its document, as a path from LITMUS_LIVE, and its line. A labeled
     # listing also has its excerpt and file.
     MARKED = %i[paragraph listing literal ulist olist dlist colist table admonition example sidebar quote verse open image section].freeze
@@ -131,14 +157,18 @@ module LitmusWeave
       Label.new(name.empty? ? nil : name, file, executable)
     end
 
-    def label_html(label, first_id)
+    def label_html(label, first_id, changed = nil, removed = nil)
       name = label.name ? "#{CGI.escapeHTML(label.name)} " : ''
       exe = label.executable ? ' :executable:' : ''
       back = ''
       if label.name && first_id[[label.file, label.name]] == label.id
         back = %( <a class="lm-back" href="#u-#{label.id}" title="Go to where this is used">&#8617;</a>)
       end
-      %(<div class="litmus-label" id="#{label.id}">#{ELLIPSIS} #{name}:file: <strong>#{CGI.escapeHTML(label.file)}</strong>#{exe}#{back}</div>)
+      badges = ''
+      count = LitmusWeave.lines_of(changed).size
+      badges << %( <span class="lm-badge lm-badge-changed">changed #{count}</span>) if count > 0
+      badges << %( <span class="lm-badge lm-badge-removed">removed #{CGI.escapeHTML(removed.to_s)}</span>) if removed
+      %(<div class="litmus-label" id="#{label.id}">#{ELLIPSIS} #{name}:file: <strong>#{CGI.escapeHTML(label.file)}</strong>#{exe}#{badges}#{back}</div>)
     end
   end
 
@@ -151,6 +181,13 @@ module LitmusWeave
       .litmus-label:target { background: #fef9c3; }
       a.lm-ref { color: #1d4ed8; }
       a.lm-ref:hover { text-decoration: underline; }
+      .lm-badge { display: inline-block; margin-left: .5em; padding: 0 .45em; border-radius: 3px; font-size: .9em; font-weight: 600; }
+      .lm-badge-changed { background: #fef3c7; color: #92400e; }
+      .lm-badge-removed { background: #fee2e2; color: #991b1b; }
+      .listingblock pre { position: relative; }
+      .lm-line { position: absolute; left: 0; pointer-events: none; }
+      .lm-hl-changed { background: rgba(250, 204, 21, .22); box-shadow: inset 3px 0 0 #eab308; }
+      .lm-hl-lit { background: rgba(59, 130, 246, .22); box-shadow: inset 3px 0 0 #2563eb; transition: top .2s; }
       .rouge .err { background: none !important; color: inherit !important; border: none !important; }
       </style>
     CSS
@@ -248,6 +285,9 @@ module LitmusWeave
       output = output.gsub(pattern) do
         head, n, code, tail = $1, $2.to_i, $3, $4
         info = listings[n]
+        data = %( data-lm-file="#{CGI.escapeHTML(info[:file])}" data-lm-name="#{CGI.escapeHTML(info[:name] || '')}")
+        data << %( data-lm-changed="#{CGI.escapeHTML(info[:changed])}") if info[:changed]
+        head = head.sub(/\A<div class="listingblock[^"]*"/) { |m| m + data }
         lines = code.split("\n", -1).map do |line|
           plain = line.gsub(/<[^>]+>/, '')
           if (m = plain.match(/\A(\s*)#{ELLIPSIS} (.*\S)\s*\z/))
@@ -265,32 +305,141 @@ module LitmusWeave
       end
       theme = (settings(doc)['mermaid-theme'] || 'neutral').gsub(/[^a-z-]/, '')
       pages = split(doc, output)
-      return finish(output, theme) unless pages
+      assets = doc.attr('litmus-assets')
+      return finish(output, theme, assets) unless pages
       outdir = doc.attr('outdir') || File.dirname(doc.attr('outfile'))
-      pages.drop(1).each { |name, html| File.write(File.join(outdir, name), finish(html, theme)) }
-      finish(pages[0][1], theme)
+      pages.drop(1).each { |name, html| File.write(File.join(outdir, name), finish(html, theme, assets)) }
+      finish(pages[0][1], theme, assets)
     end
 
-    def finish(output, theme)
+    # V5: finds a labeled listing by "NAME" or "FILE NAME", and lights lines of it. V3: lights
+    # the lines a diff changed. The lights are boxes laid over the listing, so that the
+    # highlighting of the code is left as it is; they are laid again when the fonts or the
+    # width change.
+    LINES = <<~HTML
+      <script>
+      window.LitmusLines = (function () {
+        var painted = [];
+        function numbers(ranges) {
+          var out = [];
+          String(ranges || '').split(';').forEach(function (part) {
+            var ab = part.trim().split('..'), a = parseInt(ab[0], 10), b = ab.length > 1 ? parseInt(ab[1], 10) : a;
+            if (!isNaN(a) && !isNaN(b)) for (var i = a; i <= b; i++) out.push(i);
+          });
+          return out;
+        }
+        function find(key) {
+          key = String(key).trim();
+          var nodes = document.querySelectorAll('.listingblock[data-lm-name]');
+          for (var i = 0; i < nodes.length; i++) {
+            var n = nodes[i], name = n.getAttribute('data-lm-name'), file = n.getAttribute('data-lm-file');
+            if (key === name || key === file + ' ' + name || (name === '' && key === file)) return n;
+          }
+          return null;
+        }
+        // The top and bottom of each line of the code, relative to the listing's box. A line
+        // that wraps is as tall as all its rows.
+        function rows(pre, code) {
+          var starts = [], walker = document.createTreeWalker(code, NodeFilter.SHOW_TEXT), node, fresh = true;
+          while ((node = walker.nextNode())) {
+            for (var i = 0; i < node.data.length; i++) {
+              if (fresh) { starts.push([node, i]); fresh = false; }
+              if (node.data[i] === '\\n') fresh = true;
+            }
+          }
+          var outer = pre.getBoundingClientRect(), box = code.getBoundingClientRect(), base = pre.scrollTop - outer.top;
+          var tops = starts.map(function (s) {
+            var r = document.createRange();
+            r.setStart(s[0], s[1]);
+            r.setEnd(s[0], s[1] + 1);
+            var rects = r.getClientRects();
+            return rects.length ? rects[0].top + base : null;
+          });
+          var step = box.height / Math.max(starts.length, 1);
+          for (var i = 0; i < tops.length; i++) if (tops[i] === null) tops[i] = i ? tops[i - 1] + step : box.top + base;
+          return tops.map(function (top, i) { return { top: top, bottom: i + 1 < tops.length ? tops[i + 1] : box.bottom + base }; });
+        }
+        function paint(entry) {
+          var pre = entry.block.querySelector('pre');
+          if (!pre) return;
+          entry.boxes.forEach(function (d) { d.remove(); });
+          entry.boxes = [];
+          var lines = rows(pre, pre.querySelector('code') || pre);
+          entry.lines.forEach(function (n) {
+            var line = lines[n - 1];
+            if (!line) return;
+            var d = document.createElement('div');
+            d.className = 'lm-line ' + entry.cls;
+            d.style.top = line.top + 'px';
+            d.style.height = (line.bottom - line.top) + 'px';
+            d.style.width = pre.scrollWidth + 'px';
+            pre.appendChild(d);
+            entry.boxes.push(d);
+          });
+        }
+        function add(block, ranges, cls) {
+          var entry = { block: block, lines: numbers(ranges), cls: cls, boxes: [] };
+          painted.push(entry);
+          paint(entry);
+          return entry;
+        }
+        function clear() {
+          painted = painted.filter(function (e) {
+            if (e.cls !== 'lm-hl-lit') return true;
+            e.boxes.forEach(function (d) { d.remove(); });
+            return false;
+          });
+        }
+        function light(key, ranges) {
+          clear();
+          var block = key && find(key);
+          if (block) add(block, ranges, 'lm-hl-lit');
+          return block;
+        }
+        function repaint() { painted.forEach(paint); }
+        document.addEventListener('DOMContentLoaded', function () {
+          document.querySelectorAll('.listingblock[data-lm-changed]').forEach(function (b) {
+            add(b, b.getAttribute('data-lm-changed'), 'lm-hl-changed');
+          });
+        });
+        window.addEventListener('load', repaint);
+        window.addEventListener('resize', repaint);
+        return { light: light, clear: clear, find: find, numbers: numbers };
+      })();
+      </script>
+    HTML
+
+    def finish(output, theme, assets = nil)
       head = STYLE + SPY
+      head += LINES if output.include?('data-lm-name=')
+      sections = Tree.changed_sections.uniq
+      head += changed_toc(sections) unless sections.empty?
       if (table = Tree.live)
         head += %(<script>window.LITMUS_LIVE = #{JSON.generate(table).gsub('</', '<\\/')};</script>\n) + LIVE
       end
       # Diagrams written as `<pre class="mermaid">` in a passthrough block are drawn in the
-      # browser by Mermaid.
+      # browser by Mermaid: from the page's own assets when it has them (V4), else from a CDN.
       if output.include?('class="mermaid"')
-        head += <<~HTML
-          <style>pre.mermaid { background: none; border: none; text-align: center; }</style>
-          <script type="module">
-          import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.esm.min.mjs';
-          mermaid.initialize({ startOnLoad: true, theme: '#{theme}' });
-          </script>
-        HTML
+        head += %(<style>pre.mermaid { background: none; border: none; text-align: center; }</style>\n)
+        if assets
+          src = CGI.escapeHTML(File.join(assets, 'vendor', 'mermaid.min.js'))
+          head += <<~HTML
+            <script src="#{src}"></script>
+            <script>mermaid.initialize({ startOnLoad: true, theme: '#{theme}' });</script>
+          HTML
+        else
+          head += <<~HTML
+            <script type="module">
+            import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.esm.min.mjs';
+            mermaid.initialize({ startOnLoad: true, theme: '#{theme}' });
+            </script>
+          HTML
+        end
       end
       output.sub('</head>', head + '</head>')
     end
 
-    # V3, E3, E6: the script of live pages. It sends what the reader selects to watch, opens a
+    # V6, E3, E6: the script of live pages. It sends what the reader selects to watch, opens a
     # label's file when its name is clicked, and reloads the page when watch says the pages
     # were woven again.
     LIVE = <<~'HTML'
@@ -424,6 +573,46 @@ module LitmusWeave
       });
       </script>
     HTML
+
+    # V3: marks the sections that hold changed lines in the table of contents, and adds a
+    # button beside the sync button that shows only them.
+    def changed_toc(ids)
+      list = ids.map { |id| %("#{id.gsub(/[^A-Za-z0-9_-]/, '')}") }.join(',')
+      <<~HTML
+        <style>
+        #toc a.lm-has-changed::after { content: ' \\25CF'; color: #eab308; font-size: .8em; }
+        #toc.lm-only-changed li:not(.lm-has-changed) { display: none; }
+        #lm-only { position: fixed; top: 8px; z-index: 20; font: 12px system-ui, sans-serif; padding: 3px 9px;
+          border: 1px solid #fde68a; border-radius: 12px; background: #fefce8; color: #854d0e; cursor: pointer; opacity: .9; }
+        #lm-only.on { background: #fde68a; }
+        </style>
+        <script>
+        document.addEventListener('DOMContentLoaded', function () {
+          var toc = document.getElementById('toc');
+          if (!toc) return;
+          var ids = [#{list}];
+          toc.querySelectorAll('a[href*="#"]').forEach(function (a) {
+            var id = a.getAttribute('href').split('#')[1];
+            if (ids.indexOf(id) < 0) return;
+            a.classList.add('lm-has-changed');
+            for (var li = a.closest('li'); li; li = li.parentElement && li.parentElement.closest('li')) li.classList.add('lm-has-changed');
+          });
+          var b = document.createElement('button');
+          b.id = 'lm-only'; b.type = 'button'; b.textContent = '\u25CF changed only'; b.title = 'Show only the sections a change touched';
+          b.onclick = function () { b.classList.toggle('on'); toc.classList.toggle('lm-only-changed'); };
+          document.body.appendChild(b);
+          function place() {
+            var sync = document.getElementById('lm-sync');
+            var left = sync ? sync.getBoundingClientRect().right + 6 : 8;
+            b.style.left = left + 'px';
+          }
+          place();
+          window.addEventListener('resize', place);
+          window.addEventListener('load', place);
+        });
+        </script>
+      HTML
+    end
 
     PAGES = <<~CSS
       <style>

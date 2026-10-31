@@ -1,0 +1,2 @@
+wrote docs/review.adoc: 2 blocks placed, 4 in the rest
+next: run litmus check on docs/review.adoc with the skeleton's -o, then render it

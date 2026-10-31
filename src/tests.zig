@@ -15,5 +15,8 @@ test {
     _ = @import("sync.zig");
     _ = @import("watch.zig");
     _ = @import("adopt.zig");
+    _ = @import("marks.zig");
+    _ = @import("assemble.zig");
+    _ = @import("setup.zig");
     _ = @import("live.zig");
 }

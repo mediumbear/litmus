@@ -69,7 +69,9 @@ const std = @import("std");
 | `adopt` | Create a document from existing files, split at their declarations. |
 | `check` | Verify that the documents reproduce the source files, and name the first line that differs. |
 | `where` | Map a line of a source file, such as one in a compiler error, to its line in the document. |
+| `blocks`, `assemble` | List a document's blocks, and build a document from a template of prose and a skeleton's blocks. |
 | `init`, `guide`, `style` | Prepare a project for agents, explain the workflow, and name a document's style file. |
+| `setup` | Install the review skill, the weave and the widget kit for the user. |
 
 ## Getting started
 
@@ -134,6 +136,22 @@ kind: companion
 
 In Claude Code, run `/litmus-document docs/payments.brief.md`. The agent creates the skeleton, proposes an outline of chapters, and waits for approval before writing the document in the style the brief describes, verifying it after each chapter. The brief also serves as the document's style file, so any agent that later writes prose for it, for example after `untangle` reports new code, follows the same conventions. Other agents follow the same steps from `litmus guide`.
 
+### Reviewing a change an AI made
+
+```bash
+litmus setup
+```
+
+This installs the `litmus-review` skill into `~/.claude/skills/`, and the weave, a widget kit and `render.sh` into `~/.litmus/`. In Claude Code, start a new session and run `/litmus-review pr 123`, `/litmus-review wip` or `/litmus-review branch`. The skill:
+
+- reads how you like to take in ideas from `~/.litmus/reader.md`, and asks you the first time;
+- asks how much detail you want: an overview, a walkthrough, or a deep review;
+- snapshots the changed files and the diff into `~/.litmus/reviews/REPO/SLUG/`, and never writes to the repository, builds it, or runs it;
+- makes a skeleton with `litmus adopt --diff`, which marks the blocks that hold changed lines, and lists them with `litmus blocks --changed`;
+- writes only prose and placeholders, which `litmus assemble` fills with the skeleton's blocks, exactly;
+- opens with the risks, and explains each idea with a picture you can drive: step-throughs, dataflow, timelines, sandboxes, 3D layers, and Mermaid diagrams;
+- renders with `~/.litmus/render.sh`, to a page that opens from `file://` with no network.
+
 ### Owning the code
 
 A document can also own its code, as Litmus's own implementation does. The document is then the primary source and the files are tangled from it, while edits made directly to the files are still carried back by `untangle`. Start with `litmus adopt` without `--companion`, or write the document by hand.
@@ -151,6 +169,8 @@ A large document can be split into one page per chapter: add `-a litmus-split` t
 
 Documents that use the step-through animations in `doc/visuals/` need that folder copied next to the generated HTML.
 
+`~/.litmus/render.sh DOCUMENT`, installed by `litmus setup`, renders any document with the weave and the widget kit (`share/kit/`), and copies the libraries it uses next to the page, so that it opens from `file://`. It installs Asciidoctor and Rouge into `~/.litmus/cache/` and downloads the pinned libraries once. In a document, lines of code that a diff changed are highlighted, their sections are marked in the table of contents, and the widgets can light the lines a step talks about. `share/kit/demo.adoc` shows each widget.
+
 ## Command synopsis
 
 ```
@@ -159,10 +179,13 @@ litmus check    [-o DIR] DOCUMENT...
 litmus untangle [-o DIR] [-f FILE]... [--force] DOCUMENT...
 litmus sync     [-o DIR] DOCUMENT...
 litmus watch    [-o DIR] [--interval MS] DOCUMENT...
-litmus adopt    [-o DIR] [--companion] [--style FILE] DOCUMENT PATH...
+litmus adopt    [-o DIR] [--companion] [--style FILE] [--diff FILE] DOCUMENT PATH...
+litmus blocks   [--changed] DOCUMENT...
+litmus assemble SKELETON TEMPLATE OUTPUT
 litmus where    [-o DIR] [DOCUMENT] FILE:LINE
 litmus style    DOCUMENT...
 litmus init     [-o DIR] DOCUMENT...
+litmus setup
 litmus guide
 ```
 
@@ -172,7 +195,7 @@ litmus guide
 
 - Developed and tested on macOS. Linux should work, but is not tested yet. Windows is not a target yet.
 - `watch` polls files every 200 milliseconds, which is adequate for hundreds of files. A native file-system watcher is planned.
-- `adopt` accepts files in any language, and splits them by layout: declarations at the left margin, and the members of long types. The results are best for Zig, Swift, and other brace-delimited languages; languages that delimit blocks by indentation, such as Python, are split more coarsely.
+- `adopt` accepts files in any language, and splits them by layout: declarations at the left margin, and the members of long types. It splits the members of types in braces (Zig, Swift, the C family), of items that close with `end` (Ruby, Lua, Elixir), and of Python classes, and splits types nested in types again, so a Ruby module's classes are split at their methods.
 - AsciiDoc is the primary format. Litmus can also read Markdown documents, and `tangle`, `untangle`, `check`, `sync` and `watch` work on them, but `adopt` creates AsciiDoc only, and the HTML rendering with linked excerpts and diagrams is for AsciiDoc only. A Markdown document displays as ordinary Markdown, on GitHub or elsewhere, with its `…` lines shown as plain text.
 - The rendering extension is referenced by path from this repository; it is not yet packaged.
 

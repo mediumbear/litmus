@@ -44,6 +44,12 @@ declarations. The steps are in the skill litmus-document, which `litmus init`
 installs: adopt, check, propose an outline and wait for the user, write each
 chapter in the style of the brief, check after each, and render.
 
+Reviewing a change
+`litmus setup` installs the skill litmus-review for the user, with the weave and
+the widgets it renders with. It explains a pull request, uncommitted work or a
+branch's own commits in a document kept outside the repository, using
+`adopt --diff`, `blocks` and `assemble`, and it never builds or runs the project.
+
 If untangle reports a line it cannot place, the line lost the indent of its
 excerpt: fix it in the tangled file and run untangle again. If it says that the
 documents changed too, run `litmus sync`, and if that stops as well, ask the user.

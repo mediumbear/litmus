@@ -26,7 +26,9 @@ expect_same() {
 # Runs the command of an init case in the sandbox, with Litmus reachable under the
 # name the command uses: on the PATH, or at a relative path such as tools/litmus.
 run_init() {
-  local sandbox=$1 cmd=$2 first=${2%% *}
+  local sandbox=$1 cmd=$2 first
+  # The first word that is not an assignment, such as LITMUS_HOME=home, names Litmus.
+  for first in $cmd; do [[ $first == *=* ]] || break; done
   rm -rf "$work/bin" && mkdir -p "$work/bin"
   if [[ $first == */* ]]; then
     mkdir -p "$sandbox/$(dirname "$first")"
@@ -43,9 +45,9 @@ run_init() {
   return $code
 }
 
-# A case with an `edit` directory is an untangle case. The documents are tangled into the
-# output, or the output starts as `before`. Then the files of `edit` are copied over the
-# output, those named in `remove` are removed, and untangle has to give the documents
+# A case with an `edit` directory or a `remove` file is an untangle case. The documents are
+# tangled into the output, or the output starts as `before`. Then the files of `edit` are
+# copied over the output, those named in `remove` are removed, and untangle has to give the documents
 # in `expected`. Options for untangle go in `options`.
 untangle_case() {
   local dir=$1 name=$2 sandbox=$work/sandbox out=$work/out args options="" want_exit=0 code path
@@ -60,7 +62,7 @@ untangle_case() {
   else
     (cd "$sandbox" && "$litmus" tangle -o "$out" $args) > /dev/null 2>&1 || fail "$name" "the documents do not tangle"
   fi
-  cp -R "$dir/edit/." "$out/"
+  [ -d "$dir/edit" ] && cp -R "$dir/edit/." "$out/"
   [ -f "$dir/remove" ] && while read -r path; do rm -f "$out/$path"; done < "$dir/remove"
   (cd "$sandbox" && "$litmus" untangle -o "$out" $options $args) > "$work/stdout" 2> "$work/stderr"
   code=$?
@@ -156,7 +158,7 @@ cases() {
     count=$((count + 1))
     if [ -f "$dir/cmd" ]; then
       init_case "$dir" "$name"
-    elif [ -d "$dir/edit" ]; then
+    elif [ -d "$dir/edit" ] || [ -f "$dir/remove" ]; then
       untangle_case "$dir" "$name"
     else
       tangle_case "$dir" "$name"
@@ -274,6 +276,8 @@ self() {
   local book=doc/implementation.adoc one=$work/one two=$work/two
   (cd "$root" && "$litmus" tangle -o "$one" "$book") || fail self "the book does not tangle"
   compare_with_repo self-one "$one"
+  # What `litmus setup` carries is not in the book, but the build embeds it (H2).
+  mkdir -p "$one/doc" && cp "$root/doc/litmus-weave.rb" "$one/doc/" && cp -R "$root/share" "$one/share"
   (cd "$one" && "$root/tools/zig/zig" build test && "$root/tools/zig/zig" build) || fail self "the tangled sources do not build and pass their tests"
   (cd "$root" && "$one/zig-out/bin/litmus" tangle -o "$two" "$book") || fail self "the second Litmus does not tangle the book"
   compare_with_repo self-two "$two"

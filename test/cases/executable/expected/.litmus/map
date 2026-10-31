@@ -1,0 +1,6 @@
+litmus map 1
+file	bin/run.sh	a4e0317eafab5cf1bc4a0041c7c8aeb6ece56fe72e7b2b3017a8a6574614cd35
+1	1	exe.adoc	3	0	:file:
+2	1	exe.adoc	9	0	body
+file	bin/plain.sh	69472ce95c91f64fb3b809611196d3aee541a79fa51e6cbe47e44e5ff9f3282a
+1	1	exe.adoc	14	0	:file:

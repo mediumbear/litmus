@@ -1,0 +1,8 @@
+litmus map 1
+file	nest.txt	e8a354dde4b3eb0471c2ae2944e19ec62244261431d276c656fe7a874eeb2772
+1	1	nested.adoc	6	0	:file:
+2	1	nested.adoc	13	2	outer
+3	4	nested.adoc	21	3	inner
+7	1	nested.adoc	30	7	deepest
+8	1	nested.adoc	15	2	outer
+9	1	nested.adoc	8	0	:file:

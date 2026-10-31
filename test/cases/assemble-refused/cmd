@@ -1,0 +1,1 @@
+litmus assemble docs/counter.adoc docs/template.adoc docs/review.adoc 2>&1; test ! -e docs/review.adoc

@@ -1,0 +1,11 @@
+created claude/skills/litmus-review/SKILL.md
+created home/render.sh
+created home/weave/litmus-weave.rb
+updated home/kit/kit.js
+created home/kit/stepper.js
+created home/kit/flow.js
+created home/kit/timeline.js
+created home/kit/sandbox.js
+created home/kit/layers3d.js
+---
+name: litmus-review
