@@ -1,0 +1,1 @@
+litmus adopt -o . code.adoc lib app
