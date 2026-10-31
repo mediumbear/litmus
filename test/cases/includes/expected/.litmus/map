@@ -1,0 +1,9 @@
+litmus map 1
+file	all.txt	58e45bd0250f706f045fda2d2f4dfab76665d3f4178b4de91f81ce46685b6a7d
+1	1	main.adoc	3	0	:file:
+2	1	part/one.adoc	3	0	one
+3	1	inner.adoc	3	0	two
+4	1	main.adoc	14	0	three
+5	1	main.adoc	7	0	:file:
+file	other.txt	ab929fcd5594037960792ea0b98caf5fdaf6b60645e4ef248c28db74260f393e
+1	1	two.adoc	3	0	four

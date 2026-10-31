@@ -1,0 +1,26 @@
+litmus map 1
+file	Sources/Payments/Ledger.swift	6a374b3760401ec67c4481f335822a6c6717455faaa9c5004f235de0e40f98da
+1	3	docs/refund.adoc	20	0	Ledger
+file	Sources/Payments/Refund.swift	085d7f3bc3bdd47259bcaa5f4914b53e5f9dfa3dd582f4a82fdaff85dd937e36
+1	2	docs/refund.adoc	47	0	Foundation
+3	3	docs/refund.adoc	31	0	:file:
+6	3	docs/refund.adoc	56	0	RefundError
+9	1	docs/refund.adoc	35	0	:file:
+10	3	docs/refund.adoc	64	0	RefundService
+13	2	docs/refund.adoc	87	4	RefundService.attempts
+15	1	docs/refund.adoc	68	0	RefundService
+16	13	docs/refund.adoc	94	4	RefundService.init
+29	3	docs/refund.adoc	70	0	RefundService
+32	6	docs/refund.adoc	114	4	RefundService.retry
+38	1	docs/refund.adoc	74	0	RefundService
+39	3	docs/refund.adoc	125	4	RefundService.==
+42	1	docs/refund.adoc	76	0	RefundService
+43	3	docs/refund.adoc	133	4	RefundService.reset
+46	1	docs/refund.adoc	78	0	RefundService
+47	3	docs/refund.adoc	141	4	RefundService.reset 2
+50	2	docs/refund.adoc	80	0	RefundService
+52	1	docs/refund.adoc	37	0	:file:
+53	3	docs/refund.adoc	149	0	extension RefundService
+56	1	docs/refund.adoc	39	0	:file:
+57	3	docs/refund.adoc	157	0	Ledger
+60	1	docs/refund.adoc	41	0	:file:

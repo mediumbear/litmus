@@ -1,0 +1,5 @@
+litmus map 1
+file	src/core/vm.txt	54cf25904acf2628db2a19df10603f844fd80d775ee228b382a58a968648c56f
+1	1	dir.adoc	12	0	helper
+file	other.txt	7e4fa2eb8c7ac089739d5defc4489fad68a100d92082ca35c6b40a4524821f87
+1	1	other.adoc	5	0	:file:

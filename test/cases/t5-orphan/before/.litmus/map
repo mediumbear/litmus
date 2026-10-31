@@ -1,0 +1,5 @@
+litmus map 1
+file	out.txt	01d09d19c2139a46aebfb577780d123d7396e97201bc7ead210a2ebff8239dee
+1	1	w.adoc	3	0	:file:
+file	gone.txt	abc6fd595fc079d3114d4b71a4d84b1d1d0f79df1e70f8813212f2a65d8916df
+1	1	w.adoc	8	0	:file:
