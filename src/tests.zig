@@ -18,4 +18,5 @@ test {
     _ = @import("marks.zig");
     _ = @import("assemble.zig");
     _ = @import("setup.zig");
+    _ = @import("live.zig");
 }

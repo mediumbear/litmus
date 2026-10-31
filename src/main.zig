@@ -16,6 +16,7 @@ const adopt = @import("adopt.zig");
 const marks = @import("marks.zig");
 const assemble = @import("assemble.zig");
 const setup = @import("setup.zig");
+const live = @import("live.zig");
 
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
@@ -28,7 +29,8 @@ const usage =
     \\       litmus init [-o DIR] DOCUMENT...
     \\       litmus untangle [-o DIR] [-f FILE]... [--force] DOCUMENT...
     \\       litmus sync [-o DIR] DOCUMENT...
-    \\       litmus watch [-o DIR] [--interval MS] DOCUMENT...
+    \\       litmus watch [-o DIR] [--interval MS] [--live PAGES [--port PORT] [--weave COMMAND]] DOCUMENT...
+    \\       litmus selection [-o DIR]
     \\       litmus style DOCUMENT...
     \\       litmus blocks [--changed] DOCUMENT...
     \\       litmus assemble SKELETON TEMPLATE OUTPUT
@@ -44,6 +46,8 @@ const Context = struct {
     arena: Allocator,
     out: *Io.Writer,
     err: *Io.Writer,
+    /// The environment, for live pages: `LITMUS_OPEN` (E6), and the weave's own (E2).
+    environ: ?*const std.process.Environ.Map = null,
 };
 
 const Options = struct {
@@ -53,6 +57,10 @@ const Options = struct {
     files: []const []const u8 = &.{},
     /// How often watch looks at the files, in milliseconds (W3).
     interval_ms: u64 = 200,
+    /// For watch: the folder of woven pages to serve (E1), its port, and the weave command (E2).
+    live: ?[]const u8 = null,
+    port: u16 = live.default_port,
+    weave: ?[]const u8 = null,
     /// For adopt: the document is a companion (L11), and names this style file (L10).
     companion: bool = false,
     style: ?[]const u8 = null,
@@ -64,7 +72,7 @@ const Options = struct {
 };
 
 /// Which options a command takes besides `-o DIR`.
-const Allowed = struct { force: bool = false, files: bool = false, interval: bool = false, adopt: bool = false, changed: bool = false };
+const Allowed = struct { force: bool = false, files: bool = false, interval: bool = false, adopt: bool = false, changed: bool = false, live: bool = false };
 
 /// Reads `-o DIR`, and `--force` and `-f FILE` when allowed. Prints the problem and returns
 /// null on a usage error.
@@ -110,6 +118,21 @@ fn parseOptions(ctx: Context, args: []const []const u8, allowed: Allowed) !?Opti
                 return null;
             }
             options.interval_ms = milliseconds;
+        } else if (allowed.live and (std.mem.eql(u8, arg, "--live") or std.mem.eql(u8, arg, "--weave"))) {
+            i += 1;
+            if (i == args.len) {
+                try ctx.err.print("litmus: {s} needs {s}\n", .{ arg, if (arg[2] == 'l') "a folder of pages" else "a command" });
+                return null;
+            }
+            if (arg[2] == 'l') options.live = args[i] else options.weave = args[i];
+        } else if (allowed.live and std.mem.eql(u8, arg, "--port")) {
+            i += 1;
+            const port = if (i < args.len) std.fmt.parseInt(u16, args[i], 10) catch 0 else 0;
+            if (port == 0) {
+                try ctx.err.writeAll("litmus: --port needs a port number\n");
+                return null;
+            }
+            options.port = port;
         } else if (allowed.files and std.mem.eql(u8, arg, "-f")) {
             i += 1;
             if (i == args.len) {
@@ -576,18 +599,26 @@ fn seconds(io: Io, since: Io.Timestamp) f64 {
 }
 
 fn watchCommand(ctx: Context, args: []const []const u8) !u8 {
-    const options = (try parseOptions(ctx, args, .{ .interval = true })) orelse return 2;
+    const options = (try parseOptions(ctx, args, .{ .interval = true, .live = true })) orelse return 2;
     if (!try documentsOk(ctx, options.positional)) return 2;
-    // Tangle and untangle read the arguments again, and do not know `--interval`.
+    if (options.live == null and options.weave != null) {
+        try ctx.err.writeAll("litmus: --weave is for --live\n");
+        return 2;
+    }
+    // Tangle and untangle read the arguments again, and do not know watch's own options.
+    const own = [_][]const u8{ "--interval", "--live", "--port", "--weave" };
     var inner: std.ArrayList([]const u8) = .empty;
     var skip = false;
     for (args) |arg| {
         if (skip) {
             skip = false;
-        } else if (std.mem.eql(u8, arg, "--interval")) {
+        } else if (for (own) |o| {
+            if (std.mem.eql(u8, arg, o)) break true;
+        } else false) {
             skip = true;
         } else try inner.append(ctx.arena, arg);
     }
+    const server = if (options.live) |pages| (try startLive(ctx, options, pages)) orelse return 1 else null;
     const started = Io.Timestamp.now(ctx.io, .awake);
     const interval = Io.Duration.fromMilliseconds(@intCast(options.interval_ms));
     var debounce: watch.Debounce = .{ .quiet = @intCast(options.interval_ms * std.time.ns_per_ms) };
@@ -613,6 +644,11 @@ fn watchCommand(ctx: Context, args: []const []const u8) !u8 {
             first = false;
             try ctx.out.flush();
             try ctx.err.flush();
+            // E2: weave the pages again, and have them reload.
+            if (server) |state| {
+                if (options.weave) |command| try runWeave(run_ctx, command);
+                _ = state.version.fetchAdd(1, .monotonic);
+            }
         }
 
         // W1, W3: look every interval, until something changed and then stayed quiet.
@@ -635,6 +671,70 @@ fn watchCommand(ctx: Context, args: []const []const u8) !u8 {
             break;
         }
     }
+}
+
+/// E1: starts serving the pages beside watch's loop. Prints the problem and returns null if it
+/// cannot.
+fn startLive(ctx: Context, options: Options, pages: []const u8) !?*live.State {
+    // The map is where the set keeps it (R2).
+    var diags = types.Diagnostics.init(ctx.arena);
+    var fs: DiskFs = .{ .io = ctx.io };
+    const set = try docset.load(ctx.arena, &fs, options.positional, &diags);
+    const state = try ctx.arena.create(live.State);
+    state.* = .{
+        .io = ctx.io,
+        .port = options.port,
+        .pages = pages,
+        .out_dir = options.out_dir,
+        .map_dir = mapDirPath(options, set.companion),
+        .open_template = if (ctx.environ) |env| env.get("LITMUS_OPEN") else null,
+    };
+    const server = try ctx.arena.create(Io.net.Server);
+    server.* = live.listen(ctx.io, options.port) catch |e| {
+        try ctx.err.print("litmus: cannot serve on port {d}: {s}\n", .{ options.port, @errorName(e) });
+        return null;
+    };
+    _ = ctx.io.concurrent(live.serve, .{ state, server }) catch |e| {
+        try ctx.err.print("litmus: cannot serve the pages: {s}\n", .{@errorName(e)});
+        return null;
+    };
+    try ctx.out.print("serving {s} at http://127.0.0.1:{d}/\n", .{ pages, options.port });
+    return state;
+}
+
+/// E2: runs the weave command, with `LITMUS_LIVE` set to the current directory.
+fn runWeave(ctx: Context, command: []const u8) !void {
+    var env = if (ctx.environ) |e| try e.clone(ctx.arena) else std.process.Environ.Map.init(ctx.arena);
+    try env.put("LITMUS_LIVE", try std.process.currentPathAlloc(ctx.io, ctx.arena));
+    var argv: std.ArrayList([]const u8) = .empty;
+    var words = std.mem.tokenizeAny(u8, command, " \t");
+    while (words.next()) |word| try argv.append(ctx.arena, word);
+    if (argv.items.len == 0) return;
+    var child = std.process.spawn(ctx.io, .{ .argv = argv.items, .environ_map = &env, .stdin = .ignore }) catch |e| {
+        try ctx.err.print("litmus: {s}: {s}\n", .{ argv.items[0], @errorName(e) });
+        try ctx.err.flush();
+        return;
+    };
+    const term = child.wait(ctx.io) catch |e| {
+        try ctx.err.print("litmus: {s}: {s}\n", .{ argv.items[0], @errorName(e) });
+        try ctx.err.flush();
+        return;
+    };
+    if (!term.success()) {
+        try ctx.err.print("litmus: {s} {f}\n", .{ argv.items[0], term });
+        try ctx.err.flush();
+    }
+}
+
+/// E5: prints the selection once.
+fn selectionCommand(ctx: Context, args: []const []const u8) !u8 {
+    const options = (try parseOptions(ctx, args, .{})) orelse return 2;
+    var dir = Io.Dir.cwd().openDir(ctx.io, options.out_dir, .{}) catch return 0;
+    defer dir.close(ctx.io);
+    const text = (output.readOrNull(ctx.io, ctx.arena, dir, live.selection_path) catch null) orelse return 0;
+    try ctx.out.writeAll(text);
+    dir.deleteFile(ctx.io, live.selection_path) catch {};
+    return 0;
 }
 
 /// W2: the documents of the set and the tangled files, as paths from the current directory.
@@ -939,7 +1039,7 @@ pub fn main(init: std.process.Init) !u8 {
         try err.writeAll(usage);
         return 2;
     }
-    const ctx: Context = .{ .io = io, .arena = arena, .out = out, .err = err };
+    const ctx: Context = .{ .io = io, .arena = arena, .out = out, .err = err, .environ = init.environ_map };
     const command = args[1];
     const rest = args[2..];
     const code = run: {
@@ -951,6 +1051,7 @@ pub fn main(init: std.process.Init) !u8 {
         if (std.mem.eql(u8, command, "sync")) break :run syncCommand(ctx, rest);
         if (std.mem.eql(u8, command, "watch")) break :run watchCommand(ctx, rest);
         if (std.mem.eql(u8, command, "style")) break :run styleCommand(ctx, rest);
+        if (std.mem.eql(u8, command, "selection")) break :run selectionCommand(ctx, rest);
         if (std.mem.eql(u8, command, "adopt")) break :run adoptCommand(ctx, rest);
         if (std.mem.eql(u8, command, "blocks")) break :run blocksCommand(ctx, rest);
         if (std.mem.eql(u8, command, "assemble")) break :run assembleCommand(ctx, rest);
