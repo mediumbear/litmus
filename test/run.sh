@@ -26,7 +26,9 @@ expect_same() {
 # Runs the command of an init case in the sandbox, with Litmus reachable under the
 # name the command uses: on the PATH, or at a relative path such as tools/litmus.
 run_init() {
-  local sandbox=$1 cmd=$2 first=${2%% *}
+  local sandbox=$1 cmd=$2 first
+  # The first word that is not an assignment, such as LITMUS_HOME=home, names Litmus.
+  for first in $cmd; do [[ $first == *=* ]] || break; done
   rm -rf "$work/bin" && mkdir -p "$work/bin"
   if [[ $first == */* ]]; then
     mkdir -p "$sandbox/$(dirname "$first")"
@@ -274,6 +276,8 @@ self() {
   local book=doc/implementation.adoc one=$work/one two=$work/two
   (cd "$root" && "$litmus" tangle -o "$one" "$book") || fail self "the book does not tangle"
   compare_with_repo self-one "$one"
+  # What `litmus setup` carries is not in the book, but the build embeds it (H2).
+  mkdir -p "$one/doc" && cp "$root/doc/litmus-weave.rb" "$one/doc/" && cp -R "$root/share" "$one/share"
   (cd "$one" && "$root/tools/zig/zig" build test && "$root/tools/zig/zig" build) || fail self "the tangled sources do not build and pass their tests"
   (cd "$root" && "$one/zig-out/bin/litmus" tangle -o "$two" "$book") || fail self "the second Litmus does not tangle the book"
   compare_with_repo self-two "$two"

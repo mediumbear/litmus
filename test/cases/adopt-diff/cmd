@@ -1,0 +1,1 @@
+litmus adopt -o code --companion --diff change.diff docs/counter.adoc Sources && litmus blocks --changed docs/counter.adoc

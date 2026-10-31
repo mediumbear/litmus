@@ -1,0 +1,1 @@
+LITMUS_HOME=home CLAUDE_CONFIG_DIR=claude litmus setup && LITMUS_HOME=home CLAUDE_CONFIG_DIR=claude litmus setup && test -x home/render.sh && head -n 2 claude/skills/litmus-review/SKILL.md && rm -r home/render.sh home/weave home/kit claude

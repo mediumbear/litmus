@@ -1,0 +1,1 @@
+litmus adopt --diff bad.diff doc.adoc a.txt 2>&1; test ! -e doc.adoc

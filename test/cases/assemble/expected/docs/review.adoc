@@ -1,0 +1,75 @@
+= Counting by steps
+:litmus-companion:
+
+The counter now counts in steps of two.
+
+… Counter :file: Sources/Counter.swift
+[source,swift,litmus-changed="3;6"]
+----
+struct Counter {
+    var count = 0
+    var step = 2
+
+    mutating func add() {
+        count += step
+    }
+
+    mutating func reset() {
+        count = 0
+    }
+}
+----
+
+The report no longer prints:
+
+… report :file: Sources/Counter.swift
+[source,swift,litmus-changed="2",litmus-removed="2"]
+----
+func report(_ counter: Counter) -> String {
+    return "count: \(counter.count)"
+}
+----
+
+== The rest of the files
+
+=== Sources/Counter.swift
+
+.The rest of the code (2 blocks)
+[%collapsible]
+====
+… :file: Sources/Counter.swift
+[source,swift]
+----
+… Foundation
+
+// MARK: - Counting
+
+… Counter
+
+… report
+----
+
+… Foundation :file: Sources/Counter.swift
+[source,swift]
+----
+import Foundation
+----
+====
+
+=== Sources/Old.swift
+
+.The rest of the code (2 blocks)
+[%collapsible]
+====
+… :file: Sources/Old.swift
+[source,swift]
+----
+… unchanged
+----
+
+… unchanged :file: Sources/Old.swift
+[source,swift]
+----
+let unchanged = true
+----
+====

@@ -28,13 +28,22 @@ Does whichever of tangle and untangle is needed.
 `litmus watch [-o DIR] [--interval MS] DOCUMENT...`::
 Runs sync now, and again whenever a file changes.
 
-`litmus adopt [-o DIR] [--companion] [--style FILE] DOCUMENT PATH...`::
-Writes a new document from files that have none.
+`litmus adopt [-o DIR] [--companion] [--style FILE] [--diff FILE] DOCUMENT PATH...`::
+Writes a new document from files that have none, and marks the lines a diff changed.
 
 `litmus style DOCUMENT...`::
 Prints the style file that applies to each document.
 
-`main.zig` reads the command line and runs the right command. `compare.zig` is the comparison that `check` makes, and `init.zig` is init. The text of the guide is a file of its own, which the program carries inside it.
+`litmus blocks [--changed] DOCUMENT...`::
+Lists the labeled blocks of the documents, one line each.
+
+`litmus assemble SKELETON TEMPLATE OUTPUT`::
+Writes a document from a template of prose and the blocks of a skeleton.
+
+`litmus setup`::
+Installs the review skill, the weave and the widget kit for the user.
+
+`main.zig` reads the command line and runs the right command. `compare.zig` is the comparison that `check` makes, `marks.zig` reads a diff for adopt, `assemble.zig` makes a document from a template, `setup.zig` is setup, and `init.zig` is init. The text of the guide is a file of its own, which the program carries inside it.
 
 === The command line
 
@@ -89,12 +98,20 @@ Prints the style file that applies to each document.
 
 … styleCommand
 
+… blocksCommand
+
+… assembleCommand
+
+… assembleWith
+
+… setupCommand
+
 … initCommand
 
 … main
 ----
 
-The file imports every stage, since it is where they meet. Untangle, sync, watch and adopt come last.
+The file imports every stage, since it is where they meet. Untangle, sync, watch, adopt, the marks of a diff, assemble and setup come last.
 
 … header :file: main.zig
 [source,zig]
@@ -114,12 +131,15 @@ const untangle = @import("untangle.zig");
 const sync = @import("sync.zig");
 const watch = @import("watch.zig");
 const adopt = @import("adopt.zig");
+const marks = @import("marks.zig");
+const assemble = @import("assemble.zig");
+const setup = @import("setup.zig");
 
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
 ----
 
-The usage text is printed for any wrong command line, and lists the ten commands, and the guide is embedded in the program with `@embedFile`, so that `litmus guide` always matches the version of Litmus in use.
+The usage text is printed for any wrong command line, and lists the commands, and the guide is embedded in the program with `@embedFile`, so that `litmus guide` always matches the version of Litmus in use.
 
 … usage :file: main.zig
 [source,zig]
@@ -134,7 +154,10 @@ const usage =
     \\       litmus sync [-o DIR] DOCUMENT...
     \\       litmus watch [-o DIR] [--interval MS] DOCUMENT...
     \\       litmus style DOCUMENT...
-    \\       litmus adopt [-o DIR] [--companion] [--style FILE] DOCUMENT PATH...
+    \\       litmus blocks [--changed] DOCUMENT...
+    \\       litmus assemble SKELETON TEMPLATE OUTPUT
+    \\       litmus setup
+    \\       litmus adopt [-o DIR] [--companion] [--style FILE] [--diff FILE] DOCUMENT PATH...
     \\
 ;
 
@@ -154,7 +177,7 @@ const Context = struct {
 };
 ----
 
-The options are `-o DIR`, `--force` for tangle and untangle, and `-f FILE` for untangle (U8), `--interval MS` for watch (W3), and `--companion` and `--style FILE` for adopt (A8). Each command says which of them it takes, in an `Allowed` value. Anything else that starts with a hyphen is an error, and the rest are the positional arguments: documents, or the `FILE:LINE` of `where`. `parseOptions` prints the problem itself and returns null, and the caller exits with 2.
+The options are `-o DIR`, `--force` for tangle and untangle, and `-f FILE` for untangle (U8), `--interval MS` for watch (W3), `--companion`, `--style FILE` and `--diff FILE` for adopt (A8, A9), and `--changed` for blocks (B1). Each command says which of them it takes, in an `Allowed` value. Anything else that starts with a hyphen is an error, and the rest are the positional arguments: documents, or the `FILE:LINE` of `where`. `parseOptions` prints the problem itself and returns null, and the caller exits with 2.
 
 … Options :file: main.zig
 [source,zig]
@@ -169,11 +192,15 @@ const Options = struct {
     /// For adopt: the document is a companion (L11), and names this style file (L10).
     companion: bool = false,
     style: ?[]const u8 = null,
+    /// For adopt: the diff whose changes are marked (A9).
+    diff: ?[]const u8 = null,
+    /// For blocks: only the blocks that mark changes (B1).
+    changed: bool = false,
     positional: []const []const u8 = &.{},
 };
 
 /// Which options a command takes besides `-o DIR`.
-const Allowed = struct { force: bool = false, files: bool = false, interval: bool = false, adopt: bool = false };
+const Allowed = struct { force: bool = false, files: bool = false, interval: bool = false, adopt: bool = false, changed: bool = false };
 
 /// Reads `-o DIR`, and `--force` and `-f FILE` when allowed. Prints the problem and returns
 /// null on a usage error.
@@ -193,6 +220,8 @@ fn parseOptions(ctx: Context, args: []const []const u8, allowed: Allowed) !?Opti
             options.out_dir = args[i];
         } else if (allowed.force and std.mem.eql(u8, arg, "--force")) {
             options.force = true;
+        } else if (allowed.changed and std.mem.eql(u8, arg, "--changed")) {
+            options.changed = true;
         } else if (allowed.adopt and std.mem.eql(u8, arg, "--companion")) {
             options.companion = true;
         } else if (allowed.adopt and std.mem.eql(u8, arg, "--style")) {
@@ -202,6 +231,13 @@ fn parseOptions(ctx: Context, args: []const []const u8, allowed: Allowed) !?Opti
                 return null;
             }
             options.style = args[i];
+        } else if (allowed.adopt and std.mem.eql(u8, arg, "--diff")) {
+            i += 1;
+            if (i == args.len) {
+                try ctx.err.writeAll("litmus: --diff needs a file\n");
+                return null;
+            }
+            options.diff = args[i];
         } else if (allowed.interval and std.mem.eql(u8, arg, "--interval")) {
             i += 1;
             const milliseconds = if (i < args.len) std.fmt.parseInt(u64, args[i], 10) catch 0 else 0;
@@ -1253,7 +1289,7 @@ fn collectFiles(ctx: Context, dir: Io.Dir, path: []const u8, out: *std.ArrayList
 }
 ----
 
-The command checks what it can before it reads any code. Adopt writes only new documents, and only asciidoc. A style file that it is asked to name must exist (C12), with its path taken from the document's directory, as the document will take it.
+The command checks what it can before it reads any code. Adopt writes only new documents, and only asciidoc. A style file that it is asked to name must exist (C12), with its path taken from the document's directory, as the document will take it. A diff is read and parsed now too, so that one it cannot read stops it before anything is written (A9).
 
 … adoptCommand :file: main.zig
 [source,zig]
@@ -1280,6 +1316,20 @@ fn adoptCommand(ctx: Context, args: []const []const u8) !u8 {
             try ctx.err.print("{s}: the style file does not exist (C12)\n", .{path});
             return 1;
         }
+    }
+    // A9: the changes to mark, read before anything is written.
+    var changes: []const marks.FileChange = &.{};
+    if (options.diff) |diff_path| {
+        const diff_text = cwd.readFileAlloc(ctx.io, diff_path, ctx.arena, .limited(1 << 30)) catch |e| {
+            try ctx.err.print("{s}: {s}\n", .{ diff_path, @errorName(e) });
+            return 1;
+        };
+        const parsed = try marks.parse(ctx.arena, diff_text);
+        if (parsed.problem) |p| {
+            try ctx.err.print("{s}:{d}: {s}; nothing was written\n", .{ diff_path, p.line, p.reason });
+            return 1;
+        }
+        changes = parsed.files;
     }
     var dir = cwd.openDir(ctx.io, options.out_dir, .{}) catch |e| {
         try ctx.err.print("{s}: {s}\n", .{ options.out_dir, @errorName(e) });
@@ -1329,28 +1379,36 @@ if (sources.items.len == 0) {
 }
 ----
 
-Then the document is made, by `adopt.zig`. If any file is refused, the reasons are printed and nothing is written (A2). Otherwise, before anything is written, the new document is tangled in memory, by the same check that untangle uses (U9), and every file must come back byte for byte. A difference would be a fault in Litmus, and nothing is written then either.
+Then the document is made, by `adopt.zig`. If any file is refused, the reasons are printed and nothing is written (A2). With a diff, the blocks that hold changed lines are marked (A9). Then, before anything is written, the new document is tangled in memory, by the same check that untangle uses (U9), and every file must come back byte for byte. A difference would be a fault in Litmus, and nothing is written then either.
 
 … adopt, check and write :file: main.zig
 [source,zig]
 ----
-// A8: the document must tangle to the files before it is written.
-const new_doc: types.Document = .{
+var new_doc: types.Document = .{
     .path = document,
     .format = .asciidoc,
     .lines = try @import("scan.zig").splitLines(ctx.arena, result.text),
     .dir = std.fs.path.dirname(document) orelse "",
 };
+var text = result.text;
+var changed_blocks: u32 = 0;
+if (options.diff != null) {
+    const marked = try marks.markDocument(ctx.arena, new_doc, changes);
+    text = marked.text;
+    changed_blocks = marked.blocks;
+    new_doc.lines = try @import("scan.zig").splitLines(ctx.arena, text);
+}
+// A8: the document must tangle to the files before it is written.
 var originals: std.ArrayList(untangle.FileText) = .empty;
 for (sources.items) |source| try originals.append(ctx.arena, .{ .path = source.path, .text = source.text });
 if (try untangle.verify(ctx.arena, &.{new_doc}, &.{document}, originals.items)) |message| {
     try ctx.err.print("{s}; this is a fault in Litmus, and nothing was written\n", .{message});
     return 1;
 }
-try output.writeAtomic(ctx.io, cwd, document, result.text, false);
+try output.writeAtomic(ctx.io, cwd, document, text, false);
 ----
 
-Last, the map, so that untangle, sync and watch can be used at once (A8). For a companion it goes beside the document, and nothing is written under the code's directory (R2). The report ends with the next step: an outline, then the prose, in the style the document names (N1).
+Last, the map, so that untangle, sync and watch can be used at once (A8). For a companion it goes beside the document, and nothing is written under the code's directory (R2). The report says how many blocks a diff marked, and ends with the next step: an outline, then the prose, in the style the document names (N1).
 
 … adopt, the map and the report :file: main.zig
 [source,zig]
@@ -1364,6 +1422,9 @@ defer map_dir.close(ctx.io);
 try output.writeAtomic(ctx.io, map_dir, output.map_path, try map.render(ctx.arena, built.docs, built.files), false);
 
 try ctx.out.print("wrote {s}: {d} {s}, {d} excerpts\n", .{ document, sources.items.len, if (sources.items.len == 1) "file" else "files", result.excerpts });
+if (options.diff) |diff_path| {
+    try ctx.out.print("marked {d} {s} that {s} changed (A9); litmus blocks --changed lists them\n", .{ changed_blocks, if (changed_blocks == 1) "block" else "blocks", diff_path });
+}
 if (options.style) |style| {
     try next(ctx, "read the code, propose an outline of chapters and the order that explains it best, and after it is agreed write the prose following the style in {s}; run litmus check after each chapter", .{style});
 } else {
@@ -1387,6 +1448,35 @@ fn styleCommand(ctx: Context, args: []const []const u8) !u8 {
     if (diags.list.items.len == 0) return 0;
     try printDiagnostics(ctx, &diags, set.docs);
     return 1;
+}
+----
+
+`blocks` lists the blocks of a document set, one line each, so that a writer can learn the names it needs, and where the changes are, without reading the documents (B1). It only loads the set: it needs neither the code nor a set whose excerpts resolve, since it is meant for documents being written (B2). The marks come from `marks.zig`.
+
+… blocksCommand :file: main.zig
+[source,zig]
+----
+/// B1, B2: one line per labeled block, for a writer who has not read the documents.
+fn blocksCommand(ctx: Context, args: []const []const u8) !u8 {
+    const options = (try parseOptions(ctx, args, .{ .changed = true })) orelse return 2;
+    if (!try documentsOk(ctx, options.positional)) return 2;
+    var diags = types.Diagnostics.init(ctx.arena);
+    var fs: DiskFs = .{ .io = ctx.io };
+    const set = try docset.load(ctx.arena, &fs, options.positional, &diags);
+    if (diags.list.items.len > 0) {
+        try printDiagnostics(ctx, &diags, set.docs);
+        return 1;
+    }
+    for (set.blocks) |block| {
+        const doc = set.docs[block.label.doc];
+        const m = marks.blockMarks(doc, block);
+        if (options.changed and m.changed == null and m.removed == null) continue;
+        try ctx.out.print("{s}:{d}  {s}  {s}  {d} {s}", .{ doc.path, block.label.line, block.label.file, block.label.name orelse "(file root)", block.lines.len, if (block.lines.len == 1) "line" else "lines" });
+        if (m.changed) |c| try ctx.out.print("  changed {s}", .{c});
+        if (m.removed) |r| try ctx.out.print("  removed {s}", .{r});
+        try ctx.out.writeAll("\n");
+    }
+    return 0;
 }
 ----
 
@@ -2142,6 +2232,1046 @@ test "A6: names" {
 }
 ----
 
+=== Marking what a diff changed
+
+A document made for reviewing a change should say which of its blocks the change touched: adopt puts every line of every file in the document, and most of them did not change. `adopt --diff FILE` reads a unified diff and marks each block that holds a changed line, on its source line (A9, L12). The weave then highlights those lines, and `blocks --changed` lists the blocks.
+
+… :file: marks.zig
+[source,zig]
+----
+… marks header
+
+… what a diff changed
+
+… diff paths
+
+… hunk ranges
+
+… parse a diff
+
+… marks of a block
+
+… ranges
+
+… origin
+
+… mark
+
+… read the marks
+
+… markDocument
+
+… marks tests
+----
+
+`marks.zig` is pure: it gets text and returns text. Adopt reads the diff before anything else, so that a diff it cannot read stops it before it writes (A9).
+
+… marks header :file: marks.zig
+[source,zig]
+----
+//! `adopt --diff` (A9): reads a unified diff, and marks the blocks of an adopted document
+//! that hold the lines it changed (L12). No IO.
+
+const std = @import("std");
+const types = @import("types.zig");
+const tangle = @import("tangle.zig");
+const map = @import("map.zig");
+
+const Allocator = std.mem.Allocator;
+const Block = types.Block;
+----
+
+A diff is read into one `FileChange` for each file it names. Only the new side matters, since the document holds the code after the change: the lines that were added, and the places where lines went away. A deleted file has no new side, so it is left out.
+
+… what a diff changed :file: marks.zig
+[source,zig]
+----
+/// Lines removed from a file, after its new side's line `after` (0 is the start).
+pub const Removal = struct { after: u32, count: u32 };
+
+/// What a diff did to one file, on its new side. Lines count from 1.
+pub const FileChange = struct {
+    path: []const u8,
+    /// The added lines, in order.
+    added: []const u32,
+    removed: []const Removal,
+};
+
+pub const Parsed = struct {
+    files: []const FileChange,
+    /// The line of the diff that could not be read, and why; then `files` is empty.
+    problem: ?struct { line: u32, reason: []const u8 } = null,
+};
+----
+
+The `---` and `+++` lines name the file. Git adds a tab after a name that has a space in it, puts quotes around a name with unusual bytes, and writes escapes inside them, with bytes beyond ASCII in octal. All of that is undone, and the `a/` or `b/` that git puts in front is taken off, so the path is relative to the repository's root, as adopt's paths are.
+
+… diff paths :file: marks.zig
+[source,zig]
+----
+/// A path of a `---` or `+++` line: without the tab and what follows it, without the
+/// quotes git puts around unusual names, and without a leading `a/` or `b/`.
+fn diffPath(arena: Allocator, raw: []const u8) ![]const u8 {
+    var path = raw;
+    if (std.mem.indexOfScalar(u8, path, '\t')) |tab| path = path[0..tab];
+    path = std.mem.trimEnd(u8, path, " \r");
+    if (path.len >= 2 and path[0] == '"' and path[path.len - 1] == '"') {
+        // C-style escapes: \\, \", \t, \n, and octal bytes such as \303.
+        var out: std.ArrayList(u8) = .empty;
+        var i: usize = 1;
+        while (i < path.len - 1) : (i += 1) {
+            const c = path[i];
+            if (c != '\\' or i + 1 >= path.len - 1) {
+                try out.append(arena, c);
+                continue;
+            }
+            i += 1;
+            switch (path[i]) {
+                't' => try out.append(arena, '\t'),
+                'n' => try out.append(arena, '\n'),
+                '0'...'7' => {
+                    var value: u32 = 0;
+                    var digits: usize = 0;
+                    while (digits < 3 and i < path.len - 1 and path[i] >= '0' and path[i] <= '7') : (digits += 1) {
+                        value = value * 8 + (path[i] - '0');
+                        i += 1;
+                    }
+                    i -= 1;
+                    try out.append(arena, @truncate(value));
+                },
+                else => |e| try out.append(arena, e),
+            }
+        }
+        path = out.items;
+    }
+    if (std.mem.startsWith(u8, path, "a/") or std.mem.startsWith(u8, path, "b/")) path = path[2..];
+    return path;
+}
+----
+
+A hunk header gives each side as a start and a count. The count may be left out when it is 1.
+
+… hunk ranges :file: marks.zig
+[source,zig]
+----
+/// The start and count of one side of a hunk header, such as `12,3` or `12`.
+fn range(text: []const u8) ?struct { start: u32, count: u32 } {
+    const comma = std.mem.indexOfScalar(u8, text, ',');
+    const start = std.fmt.parseInt(u32, if (comma) |c| text[0..c] else text, 10) catch return null;
+    const count = if (comma) |c| std.fmt.parseInt(u32, text[c + 1 ..], 10) catch return null else 1;
+    return .{ .start = start, .count = count };
+}
+----
+
+Each hunk is read by its counts, not by the first character of its lines alone: a removed line whose text starts with `--` looks like a `---` line, and only the counts say it is part of the hunk. `at` is the number of new-side lines before the next line of the hunk. For a hunk that adds nothing, git gives the line after which the removal happened, not the first line, so `at` starts there.
+
+Removed and added lines that are next to each other form a group. A group of one removed line and one added line is a line that was replaced: it is changed, and not also removed. Only the removed lines beyond the added ones count as removed, after the group's last line. A diff that ends inside a hunk, or a hunk longer than its header, is reported with its line, and nothing comes back.
+
+… parse a diff :file: marks.zig
+[source,zig]
+----
+/// A9: the changes of each file a unified diff names. A file the diff deletes is left out.
+pub fn parse(arena: Allocator, text: []const u8) !Parsed {
+    const lines = try @import("scan.zig").splitLines(arena, text);
+    var files: std.ArrayList(FileChange) = .empty;
+    var added: std.ArrayList(u32) = .empty;
+    var removed: std.ArrayList(Removal) = .empty;
+    var path: ?[]const u8 = null;
+
+    var i: usize = 0;
+    while (i < lines.len) : (i += 1) {
+        const line = lines[i];
+        if (std.mem.startsWith(u8, line, "+++ ")) {
+            if (path) |p| try files.append(arena, .{ .path = p, .added = try added.toOwnedSlice(arena), .removed = try removed.toOwnedSlice(arena) });
+            const name = try diffPath(arena, line[4..]);
+            path = if (std.mem.eql(u8, name, "/dev/null")) null else name;
+            continue;
+        }
+        if (!std.mem.startsWith(u8, line, "@@ -")) continue;
+
+        // @@ -a,b +c,d @@
+        const bad: Parsed = .{ .files = &.{}, .problem = .{ .line = @intCast(i + 1), .reason = "A9: a hunk header that cannot be read" } };
+        const rest = line[4..];
+        const space = std.mem.indexOfScalar(u8, rest, ' ') orelse return bad;
+        const old = range(rest[0..space]) orelse return bad;
+        if (!std.mem.startsWith(u8, rest[space..], " +")) return bad;
+        const after_plus = rest[space + 2 ..];
+        const end = std.mem.indexOfScalar(u8, after_plus, ' ') orelse return bad;
+        const new = range(after_plus[0..end]) orelse return bad;
+
+        // The new side's lines before the next line of the hunk.
+        var at: u32 = if (new.count == 0) new.start else new.start - @min(new.start, 1);
+        var old_left = old.count;
+        var new_left = new.count;
+        // The group of removed and added lines being read.
+        var minus: u32 = 0;
+        var plus: u32 = 0;
+        while (old_left > 0 or new_left > 0) {
+            i += 1;
+            if (i >= lines.len) return .{ .files = &.{}, .problem = .{ .line = @intCast(lines.len), .reason = "A9: the diff ends inside a hunk" } };
+            const body = lines[i];
+            const too_long: Parsed = .{ .files = &.{}, .problem = .{ .line = @intCast(i + 1), .reason = "A9: the hunk has more lines than its header says" } };
+            // Some tools drop the space of an empty line of context.
+            switch (if (body.len == 0) ' ' else body[0]) {
+                '\\' => continue, // "\ No newline at end of file"
+                ' ' => {
+                    if (path != null and minus > plus) try removed.append(arena, .{ .after = at, .count = minus - plus });
+                    minus = 0;
+                    plus = 0;
+                    if (old_left == 0 or new_left == 0) return too_long;
+                    old_left -= 1;
+                    new_left -= 1;
+                    at += 1;
+                },
+                '+' => {
+                    if (new_left == 0) return too_long;
+                    new_left -= 1;
+                    at += 1;
+                    plus += 1;
+                    if (path != null) try added.append(arena, at);
+                },
+                '-' => {
+                    if (old_left == 0) return too_long;
+                    old_left -= 1;
+                    minus += 1;
+                },
+                else => return .{ .files = &.{}, .problem = .{ .line = @intCast(i + 1), .reason = "A9: a line of a hunk that is neither context, added nor removed" } },
+            }
+        }
+        if (path != null and minus > plus) try removed.append(arena, .{ .after = at, .count = minus - plus });
+    }
+    if (path) |p| try files.append(arena, .{ .path = p, .added = try added.toOwnedSlice(arena), .removed = try removed.toOwnedSlice(arena) });
+    return .{ .files = files.items };
+}
+----
+
+The marks gathered for one block: the numbers of its changed lines, and how many lines were removed in it.
+
+… marks of a block :file: marks.zig
+[source,zig]
+----
+/// A document's lines with the marks, and how many blocks have them.
+pub const Marked = struct { lines: []const []const u8, blocks: u32 };
+
+/// The marks of one block: its changed lines, counting from its first line, and how many
+/// lines were removed in it.
+const Marks = struct {
+    lines: std.ArrayList(u32) = .empty,
+    removed: u32 = 0,
+};
+----
+
+The changed lines are written as ranges, so that a block of forty new lines is marked `1..40`.
+
+… ranges :file: marks.zig
+[source,zig]
+----
+/// `3..7;12`: the numbers, which are in order, as ranges.
+pub fn ranges(arena: Allocator, numbers: []const u32) ![]const u8 {
+    var out: std.ArrayList(u8) = .empty;
+    var i: usize = 0;
+    while (i < numbers.len) {
+        var j = i;
+        while (j + 1 < numbers.len and numbers[j + 1] == numbers[j] + 1) j += 1;
+        if (out.items.len > 0) try out.append(arena, ';');
+        if (j == i) {
+            try out.print(arena, "{d}", .{numbers[i]});
+        } else {
+            try out.print(arena, "{d}..{d}", .{ numbers[i], numbers[j] });
+        }
+        i = j + 1;
+    }
+    return out.items;
+}
+----
+
+The map of a tangled file already says, for each of its lines, the block it came from and where in it (L12 counts from the block's first line of code). `findRun` finds the run by binary search.
+
+… origin :file: marks.zig
+[source,zig]
+----
+/// The block that `line` of a tangled file comes from, and the line's number in it.
+fn origin(file: tangle.Tangled, line: u32) ?struct { block: *const Block, index: u32 } {
+    const r = map.findRun(file.runs, line) orelse return null;
+    const run = file.runs[r];
+    const block = run.block orelse return null;
+    return .{ .block = block, .index = run.doc_line - block.first_line + (line - run.line) + 1 };
+}
+
+fn lessU32(_: void, a: u32, b: u32) bool {
+    return a < b;
+}
+----
+
+Marking is a walk over the changes. Each added line is traced to its block. A removal is traced to the line it follows, or to the file's first line when it is at the start, and the last line when the file is shorter. Then each marked block's source line gets the attributes, before its closing bracket. Adopt writes the source line two lines above the code, which is how it is found; a line that does not look like one is left alone.
+
+… mark :file: marks.zig
+[source,zig]
+----
+/// A9: the lines of an adopted document, with the marks of L12 on the source lines of the
+/// blocks that hold changed lines. `files` are the document's files, tangled. Adopt
+/// writes each source line two lines above the block's first line of code.
+pub fn mark(arena: Allocator, doc_lines: []const []const u8, files: []const tangle.Tangled, changes: []const FileChange) !Marked {
+    var marks: std.AutoArrayHashMapUnmanaged(*const Block, Marks) = .empty;
+    for (changes) |change| {
+        const file = for (files) |f| {
+            if (std.mem.eql(u8, f.path, change.path)) break f;
+        } else continue;
+        const count: u32 = @intCast(std.mem.countScalar(u8, file.text, '\n'));
+        for (change.added) |line| {
+            const o = origin(file, line) orelse continue;
+            const entry = try marks.getOrPutValue(arena, o.block, .{});
+            try entry.value_ptr.lines.append(arena, o.index);
+        }
+        for (change.removed) |removal| {
+            if (count == 0) continue;
+            const o = origin(file, @min(@max(removal.after, 1), count)) orelse continue;
+            const entry = try marks.getOrPutValue(arena, o.block, .{});
+            entry.value_ptr.removed += removal.count;
+        }
+    }
+
+    const result = try arena.dupe([]const u8, doc_lines);
+    var marked: u32 = 0;
+    var it = marks.iterator();
+    while (it.next()) |entry| {
+        const block = entry.key_ptr.*;
+        const m = entry.value_ptr;
+        const at = block.first_line - 3;
+        const source = result[at];
+        if (!std.mem.startsWith(u8, source, "[source,") or !std.mem.endsWith(u8, source, "]")) continue;
+        var line: std.ArrayList(u8) = .empty;
+        try line.appendSlice(arena, source[0 .. source.len - 1]);
+        if (m.lines.items.len > 0) {
+            std.mem.sort(u32, m.lines.items, {}, lessU32);
+            try line.print(arena, ",litmus-changed=\"{s}\"", .{try ranges(arena, m.lines.items)});
+        }
+        if (m.removed > 0) try line.print(arena, ",litmus-removed=\"{d}\"", .{m.removed});
+        try line.append(arena, ']');
+        result[at] = line.items;
+        marked += 1;
+    }
+    return .{ .lines = result, .blocks = marked };
+}
+----
+
+`blocks` reads the marks back (B1). The values are taken as they are written, so a document whose marks were edited by hand shows what it says.
+
+… read the marks :file: marks.zig
+[source,zig]
+----
+/// L12: the value of `name="..."` in a block attribute line, or null.
+pub fn attribute(line: []const u8, name: []const u8) ?[]const u8 {
+    var from: usize = 0;
+    while (std.mem.indexOfPos(u8, line, from, name)) |at| {
+        from = at + name.len;
+        const before_ok = at > 0 and (line[at - 1] == ',' or line[at - 1] == '[');
+        if (!before_ok or !std.mem.startsWith(u8, line[from..], "=\"")) continue;
+        const start = from + 2;
+        const end = std.mem.indexOfScalarPos(u8, line, start, '"') orelse return null;
+        return line[start..end];
+    }
+    return null;
+}
+
+/// L12: what a block's source line says changed, as written there.
+pub const BlockMarks = struct { changed: ?[]const u8 = null, removed: ?[]const u8 = null };
+
+/// L12: the marks of a block, from the attribute lines between its label and its code.
+pub fn blockMarks(doc: types.Document, block: Block) BlockMarks {
+    if (block.first_line < 2 or block.label.line + 1 > block.first_line - 1) return .{};
+    var result: BlockMarks = .{};
+    for (doc.lines[block.label.line .. block.first_line - 2]) |line| {
+        if (attribute(line, "litmus-changed")) |v| result.changed = v;
+        if (attribute(line, "litmus-removed")) |v| result.removed = v;
+    }
+    return result;
+}
+----
+
+`markDocument` puts it together for adopt: it parses, resolves and tangles the new document in memory, as the tests of tangling do, marks it, and gives back the text. Adopt then checks the marked document against the files (A8), so the marks can never cost a byte of code.
+
+… markDocument :file: marks.zig
+[source,zig]
+----
+/// A9: the text of an adopted document with the marks of the changes. The document must
+/// pass the checks, as adopt's does by construction.
+pub fn markDocument(arena: Allocator, doc: types.Document, changes: []const FileChange) !struct { text: []const u8, blocks: u32 } {
+    var diags = types.Diagnostics.init(arena);
+    const parsed = try @import("parse.zig").parse(arena, 0, doc, &diags);
+    const resolved = try @import("resolve.zig").resolve(arena, try arena.dupe(types.Document, &.{doc}), parsed.blocks, &diags);
+    if (diags.list.items.len > 0) return error.InvalidDocument;
+    const files = try tangle.tangleAll(arena, resolved);
+    const marked = try mark(arena, doc.lines, files, changes);
+    var out: std.ArrayList(u8) = .empty;
+    for (marked.lines) |line| {
+        try out.appendSlice(arena, line);
+        try out.append(arena, '\n');
+    }
+    return .{ .text = out.items, .blocks = marked.blocks };
+}
+----
+
+The tests read a diff with context, with a replaced line and a removed one, a second hunk that only adds, a deleted file, and a new file with a quoted name and no final newline. Then a removal without context, a hunk cut short, the attributes of a source line, and ranges. The golden cases `adopt-diff` and `adopt-diff-unreadable` run the whole command.
+
+… marks tests :file: marks.zig
+[source,zig]
+----
+// Tests ----------------------------------------------------------------------
+
+const t = std.testing;
+
+test "A9: a diff with context, a new file, a deleted file and a quoted path" {
+    var arena_state = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const parsed = try parse(a,
+        \\diff --git a/x.zig b/x.zig
+        \\index 1..2 100644
+        \\--- a/x.zig
+        \\+++ b/x.zig
+        \\@@ -1,5 +1,4 @@
+        \\ one
+        \\-two
+        \\+TWO
+        \\ three
+        \\-four
+        \\ five
+        \\@@ -9,0 +9,2 @@ fn tail
+        \\+nine
+        \\+ten
+        \\diff --git a/gone.zig b/gone.zig
+        \\--- a/gone.zig
+        \\+++ /dev/null
+        \\@@ -1,2 +0,0 @@
+        \\-a
+        \\-b
+        \\--- /dev/null
+        \\+++ "b/caf\303\251 x.txt"
+        \\@@ -0,0 +1 @@
+        \\+new
+        \\\ No newline at end of file
+        \\
+    );
+    try t.expect(parsed.problem == null);
+    try t.expectEqual(2, parsed.files.len);
+    const x = parsed.files[0];
+    try t.expectEqualStrings("x.zig", x.path);
+    try t.expectEqualSlices(u32, &.{ 2, 9, 10 }, x.added);
+    // `two` was replaced, so it is not removed; `four` was removed after `three`.
+    try t.expectEqual(1, x.removed.len);
+    try t.expectEqual(Removal{ .after = 3, .count = 1 }, x.removed[0]);
+    try t.expectEqualStrings("café x.txt", parsed.files[1].path);
+    try t.expectEqualSlices(u32, &.{1}, parsed.files[1].added);
+}
+
+test "A9: a removal without context, and a hunk that is cut short" {
+    var arena_state = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const parsed = try parse(a, "+++ b/y.txt\n@@ -4,2 +3,0 @@\n-x\n-y\n@@ -10 +9 @@\n-old\n+new\n");
+    try t.expectEqual(Removal{ .after = 3, .count = 2 }, parsed.files[0].removed[0]);
+    try t.expectEqualSlices(u32, &.{9}, parsed.files[0].added);
+    const short = try parse(a, "+++ b/y.txt\n@@ -1,3 +1,3 @@\n a\n");
+    try t.expect(short.problem != null);
+    try t.expectEqual(0, short.files.len);
+}
+
+test "L12: the marks of a source line" {
+    const line = "[source,swift,litmus-changed=\"3..7;12\",litmus-removed=\"2\"]";
+    try t.expectEqualStrings("3..7;12", attribute(line, "litmus-changed").?);
+    try t.expectEqualStrings("2", attribute(line, "litmus-removed").?);
+    try t.expect(attribute("[source,swift]", "litmus-changed") == null);
+    try t.expect(attribute("[source,swift,xlitmus-changed=\"1\"]", "litmus-changed") == null);
+}
+
+test "A9: ranges" {
+    var arena_state = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena_state.deinit();
+    try t.expectEqualStrings("3..7;12", try ranges(arena_state.allocator(), &.{ 3, 4, 5, 6, 7, 12 }));
+    try t.expectEqualStrings("1", try ranges(arena_state.allocator(), &.{1}));
+}
+----
+
+
+
+=== Assembling a document
+
+Writing a document by moving the blocks of a skeleton is slow, and easy to get wrong: a block lost, or copied with a line changed. `assemble` lets the writer write only prose, with a line where each block goes, and copies the blocks from the skeleton exactly (S1 to S4). It is the cheap way for an agent to write a document: it writes the prose and the placeholders, and never writes code out again.
+
+The command takes three documents. It refuses to write over the skeleton or the template, which it compares as paths, and the skeleton must load, resolve and tangle like any document set, since its files are what the output must give back.
+
+… assembleCommand :file: main.zig
+[source,zig]
+----
+/// S1 to S4: the output from the skeleton's blocks and the template's prose.
+fn assembleCommand(ctx: Context, args: []const []const u8) !u8 {
+    const options = (try parseOptions(ctx, args, .{})) orelse return 2;
+    if (options.positional.len != 3) {
+        try ctx.err.writeAll(usage);
+        return 2;
+    }
+    const skeleton, const template, const output_path = options.positional[0..3].*;
+    for (options.positional) |path| if (docset.formatOf(path) != .asciidoc) {
+        try ctx.err.print("litmus: assemble reads and writes asciidoc, so {s} must end in .adoc\n", .{path});
+        return 2;
+    };
+    const target = try docset.joinPath(ctx.arena, "", output_path);
+    if (std.mem.eql(u8, target, try docset.joinPath(ctx.arena, "", skeleton)) or std.mem.eql(u8, target, try docset.joinPath(ctx.arena, "", template))) {
+        try ctx.err.print("{s}: is the skeleton or the template, which assemble never overwrites (S4)\n", .{output_path});
+        return 1;
+    }
+
+    // The skeleton must be a whole, checked document set.
+    var diags = types.Diagnostics.init(ctx.arena);
+    var fs: DiskFs = .{ .io = ctx.io };
+    const set = try docset.load(ctx.arena, &fs, &.{skeleton}, &diags);
+    if (diags.list.items.len == 0) {
+        const resolved = try resolve.resolve(ctx.arena, set.docs, set.blocks, &diags);
+        if (diags.list.items.len == 0) {
+            const files = try tangle.tangleAll(ctx.arena, resolved);
+            return assembleWith(ctx, set, files, template, output_path);
+        }
+    }
+    try printDiagnostics(ctx, &diags, set.docs);
+    return 1;
+}
+----
+
+The output is made by `assemble.zig`. Every problem is printed, with the document it is in. Then the output is checked as adopt's is: tangled in memory, it must give the skeleton's files back byte for byte (S4). The only way it can fail is a label of the template's own that changes the code, and the next line says so.
+
+… assembleWith :file: main.zig
+[source,zig]
+----
+fn assembleWith(ctx: Context, set: docset.Set, files: []const tangle.Tangled, template: []const u8, output_path: []const u8) !u8 {
+    const cwd = Io.Dir.cwd();
+    const template_text = cwd.readFileAlloc(ctx.io, template, ctx.arena, .limited(1 << 30)) catch |e| {
+        try ctx.err.print("{s}: {s}\n", .{ template, @errorName(e) });
+        return 1;
+    };
+    const template_lines = try @import("scan.zig").splitLines(ctx.arena, template_text);
+    const result = try assemble.assemble(ctx.arena, set.docs, set.blocks, template_lines);
+    for (result.problems) |p| {
+        try ctx.err.print("{s}:{d}: {s}\n", .{ if (p.in_skeleton) set.docs[0].path else template, p.line, p.message });
+    }
+    if (result.problems.len > 0) {
+        try next(ctx, "fix the placeholders above in {s} and run assemble again; nothing was written", .{template});
+        return 1;
+    }
+
+    // S4: the output must tangle to the skeleton's files.
+    const out_doc: types.Document = .{
+        .path = output_path,
+        .format = .asciidoc,
+        .lines = try @import("scan.zig").splitLines(ctx.arena, result.text),
+        .dir = std.fs.path.dirname(output_path) orelse "",
+    };
+    var wanted: std.ArrayList(untangle.FileText) = .empty;
+    for (files) |file| try wanted.append(ctx.arena, .{ .path = file.path, .text = file.text });
+    if (try untangle.verify(ctx.arena, &.{out_doc}, &.{output_path}, wanted.items)) |message| {
+        try ctx.err.print("{s}; nothing was written\n", .{message});
+        try next(ctx, "the template's own labeled blocks change the code: make them illustrations, without a label", .{});
+        return 1;
+    }
+    try output.writeAtomic(ctx.io, cwd, output_path, result.text, false);
+    try ctx.out.print("wrote {s}: {d} {s} placed, {d} in the rest\n", .{ output_path, result.placed, if (result.placed == 1) "block" else "blocks", result.rest });
+    try next(ctx, "run litmus check on {s} with the skeleton's -o, then render it", .{output_path});
+    return 0;
+}
+----
+
+`assemble.zig` is pure, like `adopt.zig`: it gets the skeleton's set, already loaded and checked, and the template's lines, and returns the text of the output, or the problems.
+
+… :file: assemble.zig
+[source,zig]
+----
+… assemble header
+
+… assemble results
+
+… entries
+
+… span
+
+… placeholder
+
+… sameName
+
+… headerEntries
+
+… assemble
+
+… assemble tests
+----
+
+It needs the scanner, to tell a placeholder from a label that has a block of its own.
+
+… assemble header :file: assemble.zig
+[source,zig]
+----
+//! `litmus assemble` (S1 to S4): a document from a template of prose, with each block of a
+//! skeleton copied to where the template's placeholder for it is. No IO.
+
+const std = @import("std");
+const types = @import("types.zig");
+const scan = @import("scan.zig");
+
+const Allocator = std.mem.Allocator;
+const Block = types.Block;
+----
+
+Problems are gathered rather than returned at the first, so that one run lists every placeholder to fix. Most are at a line of the template; a block left over is at its line in the skeleton.
+
+… assemble results :file: assemble.zig
+[source,zig]
+----
+/// A problem, at a line of the template, or of the skeleton when `in_skeleton`.
+pub const Problem = struct { in_skeleton: bool = false, line: u32, message: []const u8 };
+
+pub const Result = struct {
+    /// The text of the output, or empty if there is any problem.
+    text: []const u8,
+    problems: []const Problem,
+    /// How many blocks placeholders placed, and how many `… :rest:` placed.
+    placed: u32 = 0,
+    rest: u32 = 0,
+};
+----
+
+The skeleton's blocks are grouped by file and name. A name can have several blocks (an excerpt is all its blocks, joined), and one placeholder places them all (S3).
+
+… entries :file: assemble.zig
+[source,zig]
+----
+/// The blocks of the skeleton with one name and file, and whether a placeholder used them.
+const Entry = struct {
+    file: []const u8,
+    name: ?[]const u8,
+    blocks: std.ArrayList(*const Block) = .empty,
+    used: bool = false,
+};
+----
+
+A block is copied from its label to its closing delimiter: the label, the attribute and title lines, and the code. `first_line` is the document line of the first line of code, so the closing delimiter is `lines.len` lines after it. The lines are slices of the skeleton's text, so nothing is copied until the output is written.
+
+… span :file: assemble.zig
+[source,zig]
+----
+/// The lines of a block in its document, from its label to its closing delimiter.
+fn span(docs: []const types.Document, block: *const Block) []const []const u8 {
+    const lines = docs[block.label.doc].lines;
+    const close = block.first_line - 1 + block.lines.len;
+    return lines[block.label.line - 1 .. close + 1];
+}
+----
+
+A placeholder is a label like any other, `… name :file: path` or `… :file: path`. An `:executable:` at the end is allowed, and ignored, since the block brings its own label.
+
+… placeholder :file: assemble.zig
+[source,zig]
+----
+/// The name and path of a placeholder's command text, or null without `:file:`.
+fn placeholder(text: []const u8) ?struct { name: ?[]const u8, path: []const u8 } {
+    var rest: []const u8 = undefined;
+    var name: ?[]const u8 = null;
+    if (std.mem.startsWith(u8, text, ":file: ")) {
+        rest = text[":file: ".len..];
+    } else if (std.mem.indexOf(u8, text, " :file: ")) |at| {
+        name = std.mem.trim(u8, text[0..at], " \t");
+        rest = text[at + " :file: ".len ..];
+    } else return null;
+    rest = std.mem.trim(u8, rest, " \t\r");
+    if (std.mem.endsWith(u8, rest, ":executable:")) rest = std.mem.trimEnd(u8, rest[0 .. rest.len - ":executable:".len], " \t");
+    return .{ .name = name, .path = rest };
+}
+----
+
+Two names are the same when both are null, for file roots, or both are equal.
+
+… sameName :file: assemble.zig
+[source,zig]
+----
+fn sameName(a: ?[]const u8, b: ?[]const u8) bool {
+    if (a == null or b == null) return a == null and b == null;
+    return std.mem.eql(u8, a.?, b.?);
+}
+----
+
+The entries that S4 carries from the skeleton to the output are the companion mark and the style file, which say how the document is to be used and written. They come before the first document command (C8).
+
+… headerEntries :file: assemble.zig
+[source,zig]
+----
+/// The header entries of the skeleton that S4 carries over: `:litmus-style:` and
+/// `:litmus-companion:` lines before its first document command.
+fn headerEntries(arena: Allocator, lines: []const []const u8) ![]const []const u8 {
+    var result: std.ArrayList([]const u8) = .empty;
+    for (lines) |line| {
+        if (scan.commandOf(line) != null) break;
+        if (std.mem.startsWith(u8, line, ":litmus-style:") or std.mem.startsWith(u8, line, ":litmus-companion:")) try result.append(arena, line);
+    }
+    return result.items;
+}
+----
+
+`assemble` goes through the template once. A placeholder's blocks go into the output where it is. The rest are put where `… :rest:` was, once the whole template is read, since only then is it known which blocks are left. Then the header entries are added, and the lines are joined.
+
+… assemble :file: assemble.zig
+[source,zig]
+----
+/// S1 to S4: the output for the skeleton's set (its documents and blocks) and the template.
+pub fn assemble(arena: Allocator, docs: []const types.Document, blocks: []const Block, template: []const []const u8) !Result {
+    var problems: std.ArrayList(Problem) = .empty;
+
+    … assemble, the entries
+
+    … assemble, the placeholders
+
+    … assemble, the rest
+    if (problems.items.len > 0) return .{ .text = "", .problems = problems.items };
+    if (rest_at) |at| {
+        // A blank line after the rest would double the one the template has.
+        if (rest.items.len > 0) rest.items.len -= 1;
+        try out.insertSlice(arena, at, rest.items);
+    }
+
+    // S4: the skeleton's header entries, after the title, unless the template has its own.
+    const own = try headerEntries(arena, template);
+    if (own.len == 0 and docs.len > 0) {
+        const entries_of_skeleton = try headerEntries(arena, docs[0].lines);
+        const at: usize = if (out.items.len > 0 and std.mem.startsWith(u8, out.items[0], "= ")) 1 else 0;
+        try out.insertSlice(arena, at, entries_of_skeleton);
+    }
+
+    var text: std.ArrayList(u8) = .empty;
+    for (out.items) |line| {
+        try text.appendSlice(arena, line);
+        try text.append(arena, '\n');
+    }
+    return .{ .text = text.items, .problems = &.{}, .placed = placed, .rest = rest_count };
+}
+----
+
+First, the entries, and the files in the order the skeleton has them, which is the order of the rest.
+
+… assemble, the entries :file: assemble.zig
+[source,zig]
+----
+// The skeleton's blocks, by file and name, in the order they first appear.
+var entries: std.ArrayList(Entry) = .empty;
+var files: std.ArrayList([]const u8) = .empty;
+for (blocks) |*block| {
+    const entry = for (entries.items) |*e| {
+        if (std.mem.eql(u8, e.file, block.label.file) and sameName(e.name, block.label.name)) break e;
+    } else blk: {
+        try entries.append(arena, .{ .file = block.label.file, .name = block.label.name });
+        break :blk &entries.items[entries.items.len - 1];
+    };
+    try entry.blocks.append(arena, block);
+    for (files.items) |f| {
+        if (std.mem.eql(u8, f, block.label.file)) break;
+    } else try files.append(arena, block.label.file);
+}
+----
+
+Each line of the template is classified by the scanner, so that commands inside listings, comments and passthrough blocks are left alone (L5). A document command is a placeholder unless a block follows it after any attribute and title lines. To look ahead without losing its place, a copy of the scanner reads the lines that follow. A placeholder's path is matched exactly first, and otherwise by its end after a `/`, which must fit one file only: skeletons have long paths, and a writer should not need to spell them out.
+
+… assemble, the placeholders :file: assemble.zig
+[source,zig]
+----
+// S1: the template, line by line, with each placeholder replaced. `rest_at` is where the
+// rest goes, as an index into `out`.
+var out: std.ArrayList([]const u8) = .empty;
+var rest_at: ?usize = null;
+var placed: u32 = 0;
+var scanner = scan.Scanner.init(.asciidoc);
+for (template, 1..) |line, n| {
+    const line_no: u32 = @intCast(n);
+    if (scanner.next(line) != .command) {
+        try out.append(arena, line);
+        continue;
+    }
+    const text = std.mem.trim(u8, scan.commandOf(line).?.text, " \t\r");
+    if (std.mem.eql(u8, text, ":rest:")) {
+        if (rest_at != null) {
+            try problems.append(arena, .{ .line = line_no, .message = "S3: a second … :rest:" });
+        } else rest_at = out.items.len;
+        continue;
+    }
+    // A label that a block follows is the template's own, and stays as it is.
+    var look = scanner;
+    var follows: scan.Kind = .prose;
+    for (template[n..]) |next_line| {
+        follows = look.next(next_line);
+        if (follows != .attribute and follows != .title) break;
+    }
+    if (follows == .open) {
+        try out.append(arena, line);
+        continue;
+    }
+
+    const p = placeholder(text) orelse {
+        try problems.append(arena, .{ .line = line_no, .message = try std.fmt.allocPrint(arena, "S3: a placeholder needs :file:, as in … NAME :file: PATH: {s}", .{text}) });
+        continue;
+    };
+    // The path, or the end of exactly one file's path.
+    var file: ?[]const u8 = null;
+    var matches: u32 = 0;
+    for (files.items) |f| {
+        if (std.mem.eql(u8, f, p.path)) {
+            file = f;
+            matches = 1;
+            break;
+        }
+        if (f.len > p.path.len and std.mem.endsWith(u8, f, p.path) and f[f.len - p.path.len - 1] == '/') {
+            file = f;
+            matches += 1;
+        }
+    }
+    if (matches == 0) {
+        try problems.append(arena, .{ .line = line_no, .message = try std.fmt.allocPrint(arena, "S3: no file of the skeleton is or ends with {s}", .{p.path}) });
+        continue;
+    }
+    if (matches > 1) {
+        try problems.append(arena, .{ .line = line_no, .message = try std.fmt.allocPrint(arena, "S3: more than one file of the skeleton ends with {s}; write more of its path", .{p.path}) });
+        continue;
+    }
+    const entry = for (entries.items) |*e| {
+        if (std.mem.eql(u8, e.file, file.?) and sameName(e.name, p.name)) break e;
+    } else {
+        try problems.append(arena, .{ .line = line_no, .message = try std.fmt.allocPrint(arena, "S3: the skeleton has no block {s} of {s}", .{ p.name orelse "(file root)", file.? }) });
+        continue;
+    };
+    if (entry.used) {
+        try problems.append(arena, .{ .line = line_no, .message = try std.fmt.allocPrint(arena, "S3: the block {s} of {s} is placed twice", .{ p.name orelse "(file root)", file.? }) });
+        continue;
+    }
+    entry.used = true;
+    for (entry.blocks.items, 0..) |block, i| {
+        if (i > 0) try out.append(arena, "");
+        try out.appendSlice(arena, span(docs, block));
+    }
+    placed += @intCast(entry.blocks.items.len);
+}
+----
+
+The rest, file by file. Without a `… :rest:`, each block left over is a problem, reported at its line in the skeleton. With one, each file's blocks go under a level-3 heading with its path, in a collapsible example block that Asciidoctor shows closed. The labels inside it are still labels to Litmus, which does not treat example blocks as blocks, so the round trip holds.
+
+… assemble, the rest :file: assemble.zig
+[source,zig]
+----
+// S2: the blocks no placeholder placed, file by file, each file in a collapsible block.
+var rest: std.ArrayList([]const u8) = .empty;
+var rest_count: u32 = 0;
+for (files.items) |f| {
+    var count: u32 = 0;
+    for (entries.items) |e| if (!e.used and std.mem.eql(u8, e.file, f)) {
+        count += @intCast(e.blocks.items.len);
+    };
+    if (count == 0) continue;
+    if (rest_at == null) {
+        for (entries.items) |e| if (!e.used and std.mem.eql(u8, e.file, f)) {
+            try problems.append(arena, .{ .in_skeleton = true, .line = e.blocks.items[0].label.line, .message = try std.fmt.allocPrint(arena, "S3: the block {s} of {s} is not placed, and the template has no … :rest:", .{ e.name orelse "(file root)", f }) });
+        };
+        continue;
+    }
+    try rest.appendSlice(arena, &.{
+        try std.fmt.allocPrint(arena, "=== {s}", .{f}),
+        "",
+        try std.fmt.allocPrint(arena, ".The rest of the code ({d} {s})", .{ count, if (count == 1) "block" else "blocks" }),
+        "[%collapsible]",
+        "====",
+    });
+    var first = true;
+    for (entries.items) |e| if (!e.used and std.mem.eql(u8, e.file, f)) {
+        for (e.blocks.items) |block| {
+            if (!first) try rest.append(arena, "");
+            first = false;
+            try rest.appendSlice(arena, span(docs, block));
+        }
+    };
+    try rest.appendSlice(arena, &.{ "====", "" });
+    rest_count += count;
+}
+----
+
+The tests assemble a small skeleton with two files of the same name in different folders. The first places blocks by a shortened path and by the full one, keeps a block title and the marks of a diff, and puts the rest at the end; it checks the whole output. The second has each problem of S3 once, in the order they are reported. The third keeps a label of the template's own, with its block. The golden cases `assemble` and `assemble-refused` run the command, and `assemble` checks the output against the code.
+
+… assemble tests :file: assemble.zig
+[source,zig]
+----
+// Tests ----------------------------------------------------------------------
+
+const t = std.testing;
+const parse = @import("parse.zig");
+
+const skeleton_text =
+    \\= Skeleton
+    \\:litmus-companion:
+    \\
+    \\… :file: src/a/one.zig
+    \\[source,zig]
+    \\----
+    \\… first
+    \\
+    \\… second
+    \\----
+    \\
+    \\… first :file: src/a/one.zig
+    \\[source,zig]
+    \\----
+    \\const first = 1;
+    \\----
+    \\
+    \\… second :file: src/a/one.zig
+    \\[source,zig,litmus-changed="1"]
+    \\.A title
+    \\----
+    \\const second = 2;
+    \\----
+    \\
+    \\… :file: src/b/one.zig
+    \\[source,zig]
+    \\----
+    \\const other = 3;
+    \\----
+    \\
+;
+
+fn run(a: Allocator, template: []const u8) !Result {
+    var diags = types.Diagnostics.init(a);
+    const doc: types.Document = .{ .path = "s.adoc", .format = .asciidoc, .lines = try scan.splitLines(a, skeleton_text), .dir = "" };
+    const parsed = try parse.parse(a, 0, doc, &diags);
+    try t.expectEqual(0, diags.list.items.len);
+    return assemble(a, &.{doc}, parsed.blocks, try scan.splitLines(a, template));
+}
+
+test "S1, S2, S4: placeholders, a shortened path, the rest, and the header" {
+    var arena_state = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena_state.deinit();
+    const result = try run(arena_state.allocator(),
+        \\= Review
+        \\
+        \\The second, which changed:
+        \\
+        \\… second :file: a/one.zig
+        \\
+        \\And the root:
+        \\
+        \\… :file: src/a/one.zig
+        \\
+        \\== The rest
+        \\
+        \\… :rest:
+        \\
+    );
+    try t.expectEqual(0, result.problems.len);
+    try t.expectEqual(2, result.placed);
+    try t.expectEqual(2, result.rest);
+    try t.expectEqualStrings(
+        \\= Review
+        \\:litmus-companion:
+        \\
+        \\The second, which changed:
+        \\
+        \\… second :file: src/a/one.zig
+        \\[source,zig,litmus-changed="1"]
+        \\.A title
+        \\----
+        \\const second = 2;
+        \\----
+        \\
+        \\And the root:
+        \\
+        \\… :file: src/a/one.zig
+        \\[source,zig]
+        \\----
+        \\… first
+        \\
+        \\… second
+        \\----
+        \\
+        \\== The rest
+        \\
+        \\=== src/a/one.zig
+        \\
+        \\.The rest of the code (1 block)
+        \\[%collapsible]
+        \\====
+        \\… first :file: src/a/one.zig
+        \\[source,zig]
+        \\----
+        \\const first = 1;
+        \\----
+        \\====
+        \\
+        \\=== src/b/one.zig
+        \\
+        \\.The rest of the code (1 block)
+        \\[%collapsible]
+        \\====
+        \\… :file: src/b/one.zig
+        \\[source,zig]
+        \\----
+        \\const other = 3;
+        \\----
+        \\====
+        \\
+    , result.text);
+}
+
+test "S3: an ambiguous path, an unknown block, a block placed twice, a block left over" {
+    var arena_state = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena_state.deinit();
+    const result = try run(arena_state.allocator(),
+        \\= Review
+        \\
+        \\… :file: one.zig
+        \\
+        \\… third :file: a/one.zig
+        \\
+        \\… first :file: a/one.zig
+        \\
+        \\… first :file: a/one.zig
+        \\
+        \\… nothing here
+        \\
+    );
+    try t.expectEqual(0, result.text.len);
+    const want = [_][]const u8{
+        "S3: more than one file of the skeleton ends with one.zig; write more of its path",
+        "S3: the skeleton has no block third of src/a/one.zig",
+        "S3: the block first of src/a/one.zig is placed twice",
+        "S3: a placeholder needs :file:, as in … NAME :file: PATH: nothing here",
+        "S3: the block (file root) of src/a/one.zig is not placed, and the template has no … :rest:",
+        "S3: the block second of src/a/one.zig is not placed, and the template has no … :rest:",
+        "S3: the block (file root) of src/b/one.zig is not placed, and the template has no … :rest:",
+    };
+    try t.expectEqual(want.len, result.problems.len);
+    for (want, result.problems) |w, p| try t.expectEqualStrings(w, p.message);
+    try t.expectEqual(true, result.problems[4].in_skeleton);
+    try t.expectEqual(4, result.problems[4].line);
+}
+
+test "S1: a label with a block is the template's own" {
+    var arena_state = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena_state.deinit();
+    const result = try run(arena_state.allocator(),
+        \\… :rest:
+        \\
+        \\… extra :file: src/a/one.zig
+        \\[source,zig]
+        \\----
+        \\shown as it is
+        \\----
+        \\
+    );
+    try t.expectEqual(0, result.problems.len);
+    try t.expectEqual(0, result.placed);
+    try t.expect(std.mem.indexOf(u8, result.text, "shown as it is") != null);
+}
+----
+
 === Init, and main
 
 `init` takes the same options as tangle, apart from `--force`. It is given the name Litmus was run as, because the paragraph it writes names that (I1).
@@ -2195,7 +3325,7 @@ defer out.flush() catch {};
 defer err.flush() catch {};
 ----
 
-The first argument selects the command, and the newest are `untangle`, `sync`, `watch`, `style` and `adopt`. An error that escapes a command, such as a failed write, is printed with its name and exits with 1.
+The first argument selects the command, and the newest are `untangle`, `sync`, `watch`, `style`, `adopt`, `blocks`, `assemble` and `setup`. Setup gets the environment as well. An error that escapes a command, such as a failed write, is printed with its name and exits with 1.
 
 … main, dispatch :file: main.zig
 [source,zig]
@@ -2210,6 +3340,9 @@ const code = run: {
     if (std.mem.eql(u8, command, "watch")) break :run watchCommand(ctx, rest);
     if (std.mem.eql(u8, command, "style")) break :run styleCommand(ctx, rest);
     if (std.mem.eql(u8, command, "adopt")) break :run adoptCommand(ctx, rest);
+    if (std.mem.eql(u8, command, "blocks")) break :run blocksCommand(ctx, rest);
+    if (std.mem.eql(u8, command, "assemble")) break :run assembleCommand(ctx, rest);
+    if (std.mem.eql(u8, command, "setup")) break :run setupCommand(ctx, init.environ_map, rest);
     if (std.mem.eql(u8, command, "guide")) {
         try out.writeAll(guide_text);
         break :run 0;
@@ -2804,7 +3937,7 @@ test "I3: .gitignore gets the directory once" {
 
 The guide is what `litmus guide` prints. Agents read it before they change a tangled file. It tells them how to find their way (`.litmus/map`, `litmus where`), how to change code so that the documents and the files stay equal, and what never to do. Changing code now goes through untangle: the agent edits and tests the tangled file, runs untangle, writes the prose it asks for, and checks. If watch is running, it does the untangling on every save, and the agent only has to read its output. The guide also says what to do when untangle cannot place a line, or finds that the documents changed too. It is written for an agent, in plain words and short sentences.
 
-It also tells agents to read the style of a document before writing its prose, that every `next:` line says what to do, and where the steps for documents of existing code are.
+It also tells agents to read the style of a document before writing its prose, that every `next:` line says what to do, where the steps for documents of existing code are, and what `litmus setup` and the review skill are for.
 
 The spec includes this file, so the text exists once.
 
@@ -2856,6 +3989,12 @@ Documents for existing code
 declarations. The steps are in the skill litmus-document, which `litmus init`
 installs: adopt, check, propose an outline and wait for the user, write each
 chapter in the style of the brief, check after each, and render.
+
+Reviewing a change
+`litmus setup` installs the skill litmus-review for the user, with the weave and
+the widgets it renders with. It explains a pull request, uncommitted work or a
+branch's own commits in a document kept outside the repository, using
+`adopt --diff`, `blocks` and `assemble`, and it never builds or runs the project.
 
 If untangle reports a line it cannot place, the line lost the indent of its
 excerpt: fix it in the tangled file and run untangle again. If it says that the
@@ -2935,3 +4074,167 @@ to do: usually, write prose for the blocks that grew, in the style of the brief.
 - start a line of code with `…` (U+2026);
 - use `--force` unless the user asks.
 ----
+
+=== Setup and the review skill
+
+Some of what Litmus brings belongs to the user rather than to a project: a skill for reviewing changes that works in every repository, and the weave, the widgets and the script that render a review with no network. `litmus setup` installs them (H1 to H3). Unlike init, it takes no documents and no `-o`, and it reads its directories from the environment, which `main` passes to it.
+
+… setupCommand :file: main.zig
+[source,zig]
+----
+/// H1 to H3: the review skill, and the home of Litmus.
+fn setupCommand(ctx: Context, env: *const std.process.Environ.Map, args: []const []const u8) !u8 {
+    const options = (try parseOptions(ctx, args, .{})) orelse return 2;
+    if (options.positional.len > 0 or !std.mem.eql(u8, options.out_dir, ".")) {
+        try ctx.err.writeAll(usage);
+        return 2;
+    }
+    const dirs = (try setup.dirs(ctx.arena, env)) orelse {
+        try ctx.err.writeAll("litmus: setup needs HOME, or LITMUS_HOME and CLAUDE_CONFIG_DIR (H1)\n");
+        return 1;
+    };
+    return setup.run(ctx.io, ctx.arena, dirs, ctx.out, ctx.err);
+}
+----
+
+`setup.zig` holds the files and writes them. The texts are embedded in the program, so the files always match the Litmus that installed them, and setup needs no network (H3).
+
+… :file: setup.zig
+[source,zig]
+----
+… setup header
+
+… setup files
+
+… setup dirs
+
+… setup run
+
+… setup tests
+----
+
+It reads and writes files with the helpers of `output.zig`, which write atomically.
+
+… setup header :file: setup.zig
+[source,zig]
+----
+//! The `setup` command (H1 to H3): installs what Litmus brings for the user rather than
+//! for a project: the review skill, and the weave, the widget kit and the script that
+//! renders a review without a network.
+
+const std = @import("std");
+const output = @import("output.zig");
+
+const Allocator = std.mem.Allocator;
+const Io = std.Io;
+----
+
+Each file has a path relative to its directory. `render.sh` is written executable, as it is run by path. The weave, the kit and the script live outside `src/`, in `doc/` and `share/`, so `build.zig` makes each of them importable by its name, and `@embedFile` takes them by that name.
+
+… setup files :file: setup.zig
+[source,zig]
+----
+/// A file that setup writes, relative to the directory it belongs in.
+pub const File = struct { path: []const u8, text: []const u8, executable: bool = false };
+
+/// H2: the files of the home of Litmus. `build.zig` makes them importable by these names.
+pub const home_files = [_]File{
+    .{ .path = "render.sh", .text = @embedFile("render.sh"), .executable = true },
+    .{ .path = "weave/litmus-weave.rb", .text = @embedFile("litmus-weave.rb") },
+    .{ .path = "kit/kit.js", .text = @embedFile("kit.js") },
+    .{ .path = "kit/stepper.js", .text = @embedFile("stepper.js") },
+    .{ .path = "kit/flow.js", .text = @embedFile("flow.js") },
+    .{ .path = "kit/timeline.js", .text = @embedFile("timeline.js") },
+    .{ .path = "kit/sandbox.js", .text = @embedFile("sandbox.js") },
+    .{ .path = "kit/layers3d.js", .text = @embedFile("layers3d.js") },
+};
+
+/// H2: the skill, in Claude Code's directory.
+pub const skill = File{ .path = "skills/litmus-review/SKILL.md", .text = @embedFile("review-skill.md") };
+----
+
+The home of Litmus is `$LITMUS_HOME`, or `.litmus` in the user's home; Claude Code's directory is `$CLAUDE_CONFIG_DIR`, or `.claude` (H1). Without `HOME` and without the variables there is nowhere to put them.
+
+… setup dirs :file: setup.zig
+[source,zig]
+----
+pub const Dirs = struct { home: []const u8, claude: []const u8 };
+
+/// H1: the home of Litmus and Claude Code's directory, from the environment. Null when a
+/// directory is not set and there is no `HOME` to put it in.
+pub fn dirs(arena: Allocator, env: *const std.process.Environ.Map) !?Dirs {
+    const home = env.get("HOME");
+    const litmus = env.get("LITMUS_HOME") orelse if (home) |h| try std.fs.path.join(arena, &.{ h, ".litmus" }) else return null;
+    const claude = env.get("CLAUDE_CONFIG_DIR") orelse if (home) |h| try std.fs.path.join(arena, &.{ h, ".claude" }) else return null;
+    return .{ .home = litmus, .claude = claude };
+}
+----
+
+`run` treats the skill and the home's files alike: a file that is missing is created, one that differs is replaced, and one that is the same is left alone, so that a second run prints nothing (H3). A failure is reported and the others are still tried, as init does. Nothing else is touched: the reader's file, the cache and the reviews are never written.
+
+… setup run :file: setup.zig
+[source,zig]
+----
+/// H2, H3: writes each file that is missing or differs, and says so. Nothing else is touched.
+pub fn run(io: Io, arena: Allocator, d: Dirs, out: *Io.Writer, err: *Io.Writer) !u8 {
+    const cwd = Io.Dir.cwd();
+    var failed = false;
+    const Target = struct { dir: []const u8, file: File };
+    var targets: [home_files.len + 1]Target = undefined;
+    targets[0] = .{ .dir = d.claude, .file = skill };
+    for (home_files, 1..) |file, i| targets[i] = .{ .dir = d.home, .file = file };
+    for (targets) |target| {
+        const path = try std.fs.path.join(arena, &.{ target.dir, target.file.path });
+        const existing = output.readOrNull(io, arena, cwd, path) catch |e| {
+            try err.print("{s}: {s}\n", .{ path, @errorName(e) });
+            failed = true;
+            continue;
+        };
+        if (existing) |text| if (std.mem.eql(u8, text, target.file.text)) continue;
+        output.writeAtomic(io, cwd, path, target.file.text, target.file.executable) catch |e| {
+            try err.print("{s}: {s}\n", .{ path, @errorName(e) });
+            failed = true;
+            continue;
+        };
+        try out.print("{s} {s}\n", .{ if (existing == null) "created" else "updated", path });
+    }
+    return if (failed) 1 else 0;
+}
+----
+
+The tests read the directories from a made-up environment, with and without the variables, and check that every embedded file is there. The golden case `setup` runs it twice, over a home that has an older `kit.js` and a reader's file, which must stay as it was.
+
+… setup tests :file: setup.zig
+[source,zig]
+----
+// Tests ----------------------------------------------------------------------
+
+const t = std.testing;
+
+test "H1: the directories come from the environment, or from HOME" {
+    var arena_state = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var env = std.process.Environ.Map.init(a);
+    try t.expect(try dirs(a, &env) == null);
+    try env.put("HOME", "/Users/me");
+    const plain = (try dirs(a, &env)).?;
+    try t.expectEqualStrings("/Users/me/.litmus", plain.home);
+    try t.expectEqualStrings("/Users/me/.claude", plain.claude);
+    try env.put("LITMUS_HOME", "/opt/litmus");
+    try env.put("CLAUDE_CONFIG_DIR", "/tmp/claude");
+    const set = (try dirs(a, &env)).?;
+    try t.expectEqualStrings("/opt/litmus", set.home);
+    try t.expectEqualStrings("/tmp/claude", set.claude);
+}
+
+test "H2: the skill and the files of the home are there" {
+    try t.expect(std.mem.startsWith(u8, skill.text, "---\nname: litmus-review\n"));
+    try t.expect(std.mem.startsWith(u8, home_files[0].text, "#!/usr/bin/env bash\n"));
+    for (home_files) |file| try t.expect(file.text.len > 0);
+}
+----
+
+The skill `litmus-review` is what an agent reads when a user asks to understand a change an AI made. It takes the change from a pull request, the uncommitted work, or the branch's own commits, and makes a companion document of a snapshot of the changed files, outside the repository. The steps are built around what the first hand-made review taught: adopt marks the changed blocks, so the writing starts from them; `blocks` and `assemble` keep the agent from reading or writing code it does not need to; the widget kit turns a picture into a few lines of data; and the skill opens by suggesting a fresh session, since a document written at the end of a long one costs much more. It never builds or runs the project, and says which commands it may run.
+
+The skill is in `share/review-skill.md`, with the kit, rather than in this book. Its examples show placeholders and `… :rest:` as an agent should write them, at the start of a line, and a labeled block cannot hold such a line (L4).

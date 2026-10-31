@@ -27,6 +27,21 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    // `litmus setup` carries the review skill, the weave, the widget kit and the script that renders (H2).
+    const carried = [_][2][]const u8{
+        .{ "litmus-weave.rb", "doc/litmus-weave.rb" },
+        .{ "review-skill.md", "share/review-skill.md" },
+        .{ "render.sh", "share/render.sh" },
+        .{ "kit.js", "share/kit/kit.js" },
+        .{ "stepper.js", "share/kit/stepper.js" },
+        .{ "flow.js", "share/kit/flow.js" },
+        .{ "timeline.js", "share/kit/timeline.js" },
+        .{ "sandbox.js", "share/kit/sandbox.js" },
+        .{ "layers3d.js", "share/kit/layers3d.js" },
+    };
+    for ([_]*std.Build.Module{ litmus, test_module }) |module| {
+        for (carried) |file| module.addAnonymousImport(file[0], .{ .root_source_file = b.path(file[1]) });
+    }
     const tests = b.addTest(.{ .root_module = test_module });
     const test_step = b.step("test", "Run the unit tests, and check that the book still tangles to the sources");
     test_step.dependOn(&b.addRunArtifact(tests).step);

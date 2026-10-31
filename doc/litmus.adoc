@@ -100,6 +100,8 @@ Document set:: The documents named on the command line, and the documents they i
 
 *Rule L11.* A document may say `:litmus-companion:`, on a line of its own, outside blocks, before its first document command. The document set is then a companion of the code: see <<companion>>.
 
+*Rule L12.* A block's source line may carry the attributes `litmus-changed` and `litmus-removed`, as in `[source,swift,litmus-changed="3..7;12",litmus-removed="2"]`. They say which lines of the block a change added, and how many lines it removed there (A9). They are for the reader and the weave: tangle, untangle and check ignore them, as they ignore every attribute line, and untangle does not keep them up to date when the code moves on.
+
 A listing block closes only at a line equal to the one that opened it. Code that contains a line of four hyphens, such as a Lua comment, goes in a block opened with five or more.
 
 == Tangle
@@ -206,11 +208,20 @@ Does whichever of tangle and untangle the state of the files and the documents c
 `litmus watch [-o DIR] [--interval MS] DOCUMENT...`::
 Runs sync now, and again whenever a file changes. See <<watch>>.
 
-`litmus adopt [-o DIR] [--companion] [--style FILE] DOCUMENT PATH...`::
+`litmus adopt [-o DIR] [--companion] [--style FILE] [--diff FILE] DOCUMENT PATH...`::
 Writes a new document that holds the code of existing files. See <<adopt>>.
 
 `litmus style DOCUMENT...`::
 Prints, for each document of the set, the style file that applies to it (L10), or `none`.
+
+`litmus blocks [--changed] DOCUMENT...`::
+Prints one line per labeled block of the document set, in reading order: where its label is, its file, its name, how many lines it has, and the lines it marks as changed or removed (L12). With `--changed`, only the blocks that mark any. See <<blocks>>.
+
+`litmus assemble SKELETON TEMPLATE OUTPUT`::
+Writes a document from a template of prose and the blocks of a skeleton. See <<assemble>>.
+
+`litmus setup`::
+Installs what Litmus brings for the user rather than for a project: the review skill, the weave, the widget kit and the script that renders. See <<setup>>.
 
 *Rule N1.* Untangle, sync and watch end what they print with a line that starts with `next:` and says what to do next, in words an agent can act on: which prose to write and in which style, what to revert, or that nothing is left to do.
 
@@ -353,6 +364,41 @@ A companion document explains code that it does not own: code someone else wrote
 
 *Rule A8.* The document names its style file if `--style` is given (L10), and says `:litmus-companion:` if `--companion` is given (L11). Adopt then writes the map, under `DIR`, or beside the document for a companion (R2), so that untangle, sync and watch work at once.
 
+*Rule A9.* `--diff FILE` names a unified diff, as `git diff` and `gh pr diff` write it, with or without context lines. Its paths are relative to `DIR`, like adopt's, with a leading `a/` or `b/` taken off. For each adopted file, the lines that the diff's hunks add on the new side are _changed_. In each group of removed and added lines that are next to each other, the removed lines beyond the number added are _removed_, at the place after the group's last new-side line, or after the new side's line before the group when it adds none. A line that was replaced is changed, not removed. Each block that holds a changed line gets `litmus-changed` on its source line: the block's lines that tangle to changed lines, counted from the block's first line of code, as ranges `a..b` or single numbers, separated by `;`. A block that holds the line a removal follows, or the file's first line when the removal is at the start, gets `litmus-removed` with how many lines were removed there. A file the diff names that is not adopted is ignored, and so is a file the diff deletes. A diff that cannot be read is reported, and nothing is written.
+
+[[blocks]]
+== Blocks
+
+`litmus blocks` lets a writer, often an agent, learn the names and sizes of a document's blocks without reading the document.
+
+*Rule B1.* Each line is `DOCUMENT:LINE  FILE  NAME  N lines`, with two spaces between the fields. `LINE` is the line of the block's label, `NAME` is `(file root)` for a file root, and `N` counts the block's lines of code. A block that marks lines (L12) adds `  changed RANGES` and `  removed N`, as its source line says them.
+
+*Rule B2.* Blocks reads the documents only. It does not need the code, and it reports the errors that loading the set finds (C5 to C11), but not those of excerpts (C1 to C4).
+
+[[assemble]]
+== Assemble
+
+Writing a document by moving blocks around a skeleton is slow and easy to get wrong: a block lost, or copied with a changed line. `litmus assemble` lets the writer write only prose, with a line where each block goes, and copies the blocks from the skeleton exactly.
+
+*Rule S1.* The template is an asciidoc document. A _placeholder_ is a document command in the template that no code block follows: the next line that is not a block attribute or title line is not one that opens a block. It is replaced by the skeleton's block with the same name and file: its label, its attribute and title lines, and its code with its delimiters, exactly. The path of a placeholder is the block's file, or the end of that path after a `/` when exactly one file of the skeleton ends that way. A placeholder with no name stands for the file's root block. Any other line of the template is copied as it is.
+
+*Rule S2.* A line `… :rest:` in the template is replaced by every block of the skeleton that no placeholder placed, file by file in the skeleton's order. Each file's blocks come after a level-3 heading with the file's path, inside a collapsible example block, so that they are there for the round trip and out of the reader's way.
+
+*Rule S3.* Each of these is reported as `document:line: message`, and then nothing is written: a placeholder names no block of the skeleton, its path ends more than one file, a block is placed twice, a block is not placed and the template has no `… :rest:`, or `… :rest:` appears twice. A name made of several blocks in the skeleton is placed by one placeholder, which places all its blocks, in order.
+
+*Rule S4.* The output gets the skeleton's `:litmus-style:` and `:litmus-companion:` entries, as the skeleton writes them, after its title line, when the template has none of its own. So the output belongs beside the skeleton. Before writing, assemble tangles the output in memory and requires the skeleton's files back, byte for byte. It overwrites `OUTPUT`, which it made, but refuses when `OUTPUT` is the skeleton or the template.
+
+[[setup]]
+== Setup
+
+Some of what Litmus brings belongs to the user rather than to a project: a skill for reviewing changes that works in every repository, and the weave, widgets and libraries that render a review without a network. `litmus setup` installs them.
+
+*Rule H1.* The home of Litmus is `$LITMUS_HOME`, or `~/.litmus` when that is not set. Claude Code's directory is `$CLAUDE_CONFIG_DIR`, or `~/.claude`.
+
+*Rule H2.* Setup writes the skill `litmus-review` to `skills/litmus-review/SKILL.md` in Claude Code's directory, and to the home of Litmus: `render.sh`, executable; the weave, `weave/litmus-weave.rb`; and the widget kit, in `kit/`. All of them come with Litmus.
+
+*Rule H3.* Setup replaces a file that differs from the one Litmus brings, prints `created` or `updated` and the path for each file it writes, and changes nothing else. It never touches `reader.md`, `cache/` or `reviews/` in the home of Litmus, and it uses no network. Running it twice changes nothing the second time.
+
 == Weave
 
 Asciidoctor with a small extension, `doc/litmus-weave.rb`. A document command becomes a small label with its file name and an anchor. An excerpt command becomes a link to its excerpt, and the label links back. The table of contents follows the section being read. Diagrams in `<pre class="mermaid">` passthrough blocks are drawn by Mermaid.
@@ -360,6 +406,12 @@ Asciidoctor with a small extension, `doc/litmus-weave.rb`. A document command be
 *Rule V1.* If the main document names a style file, the weave reads the `key: value` lines in its `## Settings` section. `mermaid-theme` sets the theme of the diagrams.
 
 *Rule V2.* If the main document sets the attribute `litmus-split`, in its header or with `-a litmus-split`, the weave writes one page per chapter. A chapter is a level-1 section, and a part title goes on the page of the part's first chapter. The main page keeps the title, the table of contents and the preamble; chapter `ID` goes to `NAME-ID.html` beside it, where `NAME` is the main page's name and `ID` is the chapter's id without its leading `_`. Every page has the table of contents and links to the previous and next pages. A link to an anchor on another page points to that page, so links between excerpts, cross references and the table of contents work as on one page. When the output goes to standard output, the weave writes one page.
+
+*Rule V3.* A listing whose source line has `litmus-changed` (L12) shows those lines highlighted, and its label shows how many lines changed; `litmus-removed` shows how many were removed. A section that holds such a listing, and the sections around it, are marked in the table of contents, and a button shows only them.
+
+*Rule V4.* If the document sets the attribute `litmus-assets`, a folder relative to the page, the weave loads Mermaid from `ASSETS/vendor/mermaid.min.js` with a classic script, so the page needs no network and opens from `file://`. Otherwise it loads Mermaid from a CDN.
+
+*Rule V5.* Every labeled listing carries its file and name, so that a script on the page can find it and light some of its lines: `LitmusLines.light("NAME", "3..7;12")`, or `"FILE NAME"` when names clash, and `LitmusLines.clear()`. Line numbers count from the block's first line, as in L12.
 
 == Markdown
 
