@@ -195,7 +195,7 @@ litmus guide
 
 - Developed and tested on macOS. Linux should work, but is not tested yet. Windows is not a target yet.
 - `watch` polls files every 200 milliseconds, which is adequate for hundreds of files. A native file-system watcher is planned.
-- `adopt` accepts files in any language, and splits them by layout: declarations at the left margin, and the members of long types. The results are best for Zig, Swift, and other brace-delimited languages; languages that delimit blocks by indentation, such as Python, are split more coarsely.
+- `adopt` accepts files in any language, and splits them by layout: declarations at the left margin, and the members of long types. It splits the members of types in braces (Zig, Swift, the C family), of items that close with `end` (Ruby, Lua, Elixir), and of Python classes, and splits types nested in types again, so a Ruby module's classes are split at their methods.
 - AsciiDoc is the primary format. Litmus can also read Markdown documents, and `tangle`, `untangle`, `check`, `sync` and `watch` work on them, but `adopt` creates AsciiDoc only, and the HTML rendering with linked excerpts and diagrams is for AsciiDoc only. A Markdown document displays as ordinary Markdown, on GitHub or elsewhere, with its `…` lines shown as plain text.
 - The rendering extension is referenced by path from this repository; it is not yet packaged.
 

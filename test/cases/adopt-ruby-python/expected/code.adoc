@@ -1,0 +1,330 @@
+= code
+:toc: left
+:toclevels: 3
+:sectanchors:
+
+This document was made by `litmus adopt` from 2 files. Each file is a section, with its code split into excerpts at its declarations. The excerpts can be moved into the order that explains the code best, and the prose goes between them.
+
+== lib/weave.rb
+
+… :file: lib/weave.rb
+[source,ruby]
+----
+… require
+
+… Weave
+
+… Weave 2
+----
+
+… require :file: lib/weave.rb
+[source,ruby]
+----
+# Labels for code blocks.
+require 'cgi'
+----
+
+… Weave :file: lib/weave.rb
+[source,ruby]
+----
+module Weave
+  … Weave.ELLIPSIS
+
+  … Weave.lines_of
+
+  … Weave.Tree
+
+  … Weave.Post
+end
+----
+
+… Weave.ELLIPSIS :file: lib/weave.rb
+[source,ruby]
+----
+ELLIPSIS = "…"
+Label = Struct.new(:name, :file)
+----
+
+… Weave.lines_of :file: lib/weave.rb
+[source,ruby]
+----
+# The line numbers of ranges such as `3..7;12`.
+def self.lines_of(ranges)
+  ranges.to_s.split(';').flat_map do |part|
+    a, b = part.strip.split('..', 2)
+    b ? (a.to_i..b.to_i).to_a : [a.to_i]
+  end
+end
+----
+
+… Weave.Tree :file: lib/weave.rb
+[source,ruby]
+----
+class Tree
+  … Tree.process
+
+  … Tree.parse_label
+
+  … Tree.label_html
+
+  … Tree.chapter_one
+
+  … Tree.chapter_two
+
+  … Tree.chapter_three
+
+  … Tree.chapter_four
+
+  … Tree.to_s
+end
+----
+
+… Tree.process :file: lib/weave.rb
+[source,ruby]
+----
+def process(doc)
+  doc.find_by(context: :listing).each do |node|
+    label = parse_label(node)
+    next unless label
+
+    node.id = label.name
+  end
+end
+----
+
+… Tree.parse_label :file: lib/weave.rb
+[source,ruby]
+----
+def parse_label(node)
+  text = node.source.strip
+  return nil unless text.start_with?(ELLIPSIS)
+
+  name, file = text[2..].split(' :file: ', 2)
+  Label.new(name, file)
+end
+----
+
+… Tree.label_html :file: lib/weave.rb
+[source,ruby]
+----
+def label_html(label)
+  "<div class=\"label\">#{CGI.escapeHTML(label.name)}</div>"
+end
+----
+
+… Tree.chapter_one :file: lib/weave.rb
+[source,ruby]
+----
+def chapter_one(doc)
+  doc.sections[0]
+end
+----
+
+… Tree.chapter_two :file: lib/weave.rb
+[source,ruby]
+----
+def chapter_two(doc)
+  doc.sections[1]
+end
+----
+
+… Tree.chapter_three :file: lib/weave.rb
+[source,ruby]
+----
+def chapter_three(doc)
+  doc.sections[2]
+end
+----
+
+… Tree.chapter_four :file: lib/weave.rb
+[source,ruby]
+----
+def chapter_four(doc)
+  doc.sections[3]
+end
+----
+
+… Tree.to_s :file: lib/weave.rb
+[source,ruby]
+----
+def to_s
+  "tree"
+end
+----
+
+… Weave.Post :file: lib/weave.rb
+[source,ruby]
+----
+class Post
+  def process(doc, output)
+    output.sub('</head>', "<style>.label{}</style></head>")
+  end
+end
+----
+
+… Weave 2 :file: lib/weave.rb
+[source,ruby]
+----
+Weave.lines_of(ARGV[0])
+----
+
+== app/store.py
+
+… :file: app/store.py
+[source,python]
+----
+… block
+
+… json
+
+
+… Store
+
+
+… main
+----
+
+… block :file: app/store.py
+[source,python]
+----
+"""A store of items."""
+----
+
+… json :file: app/store.py
+[source,python]
+----
+import json
+----
+
+… Store :file: app/store.py
+[source,python]
+----
+class Store:
+    … Store.block
+
+    … Store.path
+
+    … Store.__init__
+
+    … Store.add
+
+    … Store.count
+
+    … Store.save
+
+    … Store.load
+
+    … Store.clear
+
+    … Store.first
+
+    … Store.last
+
+    … Store.open
+
+    … Store.closed
+
+    … Store.__len__
+----
+
+… Store.block :file: app/store.py
+[source,python]
+----
+"""Items, saved as JSON."""
+----
+
+… Store.path :file: app/store.py
+[source,python]
+----
+# Where the items are saved.
+path = "items.json"
+----
+
+… Store.__init__ :file: app/store.py
+[source,python]
+----
+def __init__(self):
+    self.items = []
+----
+
+… Store.add :file: app/store.py
+[source,python]
+----
+def add(self, item):
+    self.items.append(item)
+    return len(self.items)
+----
+
+… Store.count :file: app/store.py
+[source,python]
+----
+@property
+def count(self):
+    return len(self.items)
+----
+
+… Store.save :file: app/store.py
+[source,python]
+----
+def save(self):
+    with open(self.path, "w") as f:
+        json.dump(self.items, f)
+----
+
+… Store.load :file: app/store.py
+[source,python]
+----
+def load(self):
+    with open(self.path) as f:
+        self.items = json.load(f)
+----
+
+… Store.clear :file: app/store.py
+[source,python]
+----
+def clear(self):
+    self.items = []
+----
+
+… Store.first :file: app/store.py
+[source,python]
+----
+def first(self):
+    return self.items[0]
+----
+
+… Store.last :file: app/store.py
+[source,python]
+----
+def last(self):
+    return self.items[-1]
+----
+
+… Store.open :file: app/store.py
+[source,python]
+----
+def open(self):
+    return [i for i in self.items if i.open]
+----
+
+… Store.closed :file: app/store.py
+[source,python]
+----
+def closed(self):
+    return [i for i in self.items if i.closed]
+----
+
+… Store.__len__ :file: app/store.py
+[source,python]
+----
+def __len__(self):
+    return len(self.items)
+----
+
+… main :file: app/store.py
+[source,python]
+----
+def main():
+    Store().save()
+----
+

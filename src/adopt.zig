@@ -43,10 +43,17 @@ fn indentOf(line: []const u8) []const u8 {
     return line[0..i];
 }
 
-fn isComment(line: []const u8) bool {
+/// A comment line (A4). `hash` says whether `#` starts a comment, as it does in every file
+/// but Markdown, where it starts a heading.
+fn isComment(line: []const u8, hash: bool) bool {
     const body = std.mem.trimStart(u8, line, " \t");
+    if (hash and body.len > 0 and body[0] == '#') {
+        const rest = std.mem.trimEnd(u8, body[1..], "\r");
+        if (rest.len == 0 or rest[0] == ' ' or rest[0] == '\t') return true;
+    }
     return std.mem.startsWith(u8, body, "//") or std.mem.startsWith(u8, body, "/*") or
-        std.mem.startsWith(u8, body, "*") or std.mem.startsWith(u8, body, "#!");
+        std.mem.startsWith(u8, body, "*") or std.mem.startsWith(u8, body, "#!") or
+        std.mem.startsWith(u8, body, "-- ");
 }
 
 /// The title of a `// MARK: - Title` or `// MARK: Title` line (A3), or null.
@@ -63,7 +70,7 @@ fn markTitle(line: []const u8) ?[]const u8 {
 const Item = struct { first: usize, last: usize };
 
 /// Splits lines into items (A4, A5): an item starts at a line with no indent beyond `indent`,
-/// that is not a closing brace, and follows a blank line. The first item starts at the first
+/// that is not a closing brace or `end`, and follows a blank line. The first item starts at the first
 /// non-blank line. Each item ends at its last non-blank line.
 fn items(arena: Allocator, lines: []const []const u8, from: usize, to: usize, indent: []const u8) ![]const Item {
     var result: std.ArrayList(Item) = .empty;
@@ -77,7 +84,8 @@ fn items(arena: Allocator, lines: []const []const u8, from: usize, to: usize, in
             continue;
         }
         const starts = after_blank and std.mem.startsWith(u8, line, indent) and line.len > indent.len and
-            line[indent.len] != ' ' and line[indent.len] != '\t' and line[indent.len] != '}' and line[indent.len] != ')';
+            line[indent.len] != ' ' and line[indent.len] != '\t' and line[indent.len] != '}' and line[indent.len] != ')' and
+            !std.mem.eql(u8, std.mem.trimEnd(u8, line[indent.len..], " \t\r"), "end");
         if (starts or start == null) {
             if (start) |s| try result.append(arena, .{ .first = s, .last = last_text });
             start = i;
@@ -96,6 +104,7 @@ const keywords = [_][]const u8{
     "inline",  "noinline",    "comptime", "threadlocal", "async",   "throws",   "lazy",     "weak",
     "unowned", "convenience", "required", "indirect",  "typealias", "union",    "opaque",   "usingnamespace",
     "case",    "dynamic",     "package",  "consuming", "borrowing", "distributed", "import",
+    "def",     "defp",        "defmacro", "defmodule", "module",    "function", "local",
 };
 
 fn isKeyword(word: []const u8) bool {
@@ -108,9 +117,9 @@ fn isNameChar(c: u8) bool {
 }
 
 /// The name of an excerpt, from its first line that is not a comment or an attribute (A6).
-fn nameOf(arena: Allocator, lines: []const []const u8, item: Item) ![]const u8 {
+fn nameOf(arena: Allocator, lines: []const []const u8, item: Item, hash: bool) ![]const u8 {
     for (lines[item.first .. item.last + 1]) |raw| {
-        if (isBlank(raw) or isComment(raw)) continue;
+        if (isBlank(raw) or isComment(raw, hash)) continue;
         const line = std.mem.trim(u8, raw, " \t\r");
         // A test is named after its string.
         if (std.mem.startsWith(u8, line, "test \"")) {
@@ -119,6 +128,7 @@ fn nameOf(arena: Allocator, lines: []const []const u8, item: Item) ![]const u8 {
         }
         var extension = false;
         var after_func = false;
+        var after_def = false;
         var i: usize = 0;
         while (i < line.len) {
             while (i < line.len and (line[i] == ' ' or line[i] == '\t')) i += 1;
@@ -151,6 +161,18 @@ fn nameOf(arena: Allocator, lines: []const []const u8, item: Item) ![]const u8 {
             } else break;
             const word = line[start..i];
             after_func = std.mem.eql(u8, word, "func");
+            const dot = i + 1 < line.len and line[i] == '.' and isNameChar(line[i + 1]);
+            // The word after `def`, `defmodule` or `function` is the name, even a keyword such as
+            // `open`. `self.name` is `name`, and `M.name` keeps its dot.
+            if (after_def and word.len > 0) {
+                if (!dot) return word;
+                var end = i + 1;
+                while (end < line.len and (isNameChar(line[end]) or line[end] == '.')) end += 1;
+                return if (std.mem.eql(u8, word, "self")) line[i + 1 .. end] else line[start..end];
+            }
+            after_def = std.mem.eql(u8, word, "def") or std.mem.eql(u8, word, "defmodule") or std.mem.eql(u8, word, "function");
+            // A keyword followed by a dot, as `module` in `module.exports`, is a name.
+            if (dot and isKeyword(word)) return word;
             // Words such as `private(set)` carry their parentheses.
             if (i < line.len and line[i] == '(' and isKeyword(word)) {
                 while (i < line.len and line[i] != ')') i += 1;
@@ -268,6 +290,7 @@ fn adoptFile(w: *Writer, source: Source) !void {
     const arena = w.arena;
     const lines = try @import("scan.zig").splitLines(arena, source.text);
     const language = languageOf(source.path);
+    const hash = !std.mem.eql(u8, language, "markdown");
     var taken: std.StringHashMapUnmanaged(void) = .empty;
     var root: std.ArrayList([]const u8) = .empty;
     var parts: std.ArrayList(Part) = .empty;
@@ -282,7 +305,7 @@ fn adoptFile(w: *Writer, source: Source) !void {
 
         // An item of only comments stays in the root, and a MARK line is a heading (A3).
         var only_comments = true;
-        for (body) |line| if (!isBlank(line) and !isComment(line)) {
+        for (body) |line| if (!isBlank(line) and !isComment(line, hash)) {
             only_comments = false;
         };
         if (only_comments) {
@@ -294,9 +317,10 @@ fn adoptFile(w: *Writer, source: Source) !void {
         }
         if (markTitle(body[0])) |title| try parts.append(arena, .{ .heading = title });
 
-        const name = try unique(arena, &taken, try nameOf(arena, lines, item));
+        const bare = try nameOf(arena, lines, item, hash);
+        const name = try unique(arena, &taken, bare);
         try root.append(arena, try std.fmt.allocPrint(arena, "{s} {s}", .{ ellipsis, name }));
-        try splitItem(arena, &parts, &taken, lines, item, name);
+        try splitItem(arena, &parts, &taken, lines, item, name, bare, hash, false);
     }
     while (at < lines.len) : (at += 1) try root.append(arena, lines[at]);
 
@@ -308,36 +332,68 @@ fn adoptFile(w: *Writer, source: Source) !void {
     };
 }
 
-/// A5: a long item in braces is split one level deeper. Otherwise it is one excerpt.
-fn splitItem(arena: Allocator, parts: *std.ArrayList(Part), taken: *std.StringHashMapUnmanaged(void), lines: []const []const u8, item: Item, name: []const u8) !void {
-    const whole = lines[item.first .. item.last + 1];
+/// The words that make a member a type, to be split again (A5).
+const type_words = [_][]const u8{
+    "class",    "module",    "defmodule", "struct", "enum",      "union",  "extension",
+    "protocol", "actor",     "impl",      "trait",  "interface", "namespace", "object",
+};
+
+fn declaresType(line: []const u8) bool {
+    var words = std.mem.tokenizeAny(u8, line, " \t\r(){}<>:;,=.");
+    while (words.next()) |word| {
+        for (type_words) |w| if (std.mem.eql(u8, w, word)) return true;
+    }
+    return false;
+}
+
+/// Where an item's body is (A5): after the declaration line `open`, up to the closing line
+/// `close`, which is past the item when it has none.
+const Body = struct { open: usize, close: usize };
+
+/// A5: the body of an item, if it is delimited by braces, by `end`, or by a Python
+/// declaration's colon and indent. Otherwise null.
+fn bodyOf(lines: []const []const u8, item: Item, hash: bool) ?Body {
     // The declaration's first line, past the comments and attributes above it.
     var open = item.first;
-    while (open < item.last and (isComment(lines[open]) or std.mem.startsWith(u8, std.mem.trim(u8, lines[open], " \t\r"), "@"))) open += 1;
-    const opens = std.mem.endsWith(u8, std.mem.trimEnd(u8, lines[open], " \t\r"), "{");
-    const close = std.mem.trimEnd(u8, lines[item.last], " \t\r");
-    const closes = std.mem.eql(u8, close, "}") or std.mem.eql(u8, close, "};");
-    if (whole.len <= split_above or !opens or !closes or open + 1 >= item.last) {
+    while (open < item.last and (isComment(lines[open], hash) or std.mem.startsWith(u8, std.mem.trim(u8, lines[open], " \t\r"), "@"))) open += 1;
+    if (open >= item.last) return null;
+    const first = std.mem.trimEnd(u8, lines[open], " \t\r");
+    const last = std.mem.trimEnd(u8, lines[item.last], " \t\r");
+    if (std.mem.endsWith(u8, first, "{") and (std.mem.eql(u8, last, "}") or std.mem.eql(u8, last, "};"))) {
+        return .{ .open = open, .close = item.last };
+    }
+    if (std.mem.eql(u8, last, "end")) return .{ .open = open, .close = item.last };
+    const python = std.mem.startsWith(u8, first, "class ") or std.mem.startsWith(u8, first, "def ") or
+        std.mem.startsWith(u8, first, "async def ");
+    if (python and std.mem.endsWith(u8, first, ":")) return .{ .open = open, .close = item.last + 1 };
+    return null;
+}
+
+/// A5: a long item with a delimited body is split one level deeper, and a member that declares
+/// a type is split again. Otherwise the item is one excerpt. `bare` is the item's name before
+/// it was made unique, and `nested` says whether the item is a member.
+fn splitItem(arena: Allocator, parts: *std.ArrayList(Part), taken: *std.StringHashMapUnmanaged(void), lines: []const []const u8, item: Item, name: []const u8, bare: []const u8, hash: bool, nested: bool) !void {
+    const whole = lines[item.first .. item.last + 1];
+    const body = (if (whole.len > split_above) bodyOf(lines, item, hash) else null) orelse {
         try parts.append(arena, .{ .excerpt = .{ .name = name, .lines = whole } });
         return;
-    }
+    };
+    const open = body.open;
     var first_text = open + 1;
-    while (first_text < item.last and isBlank(lines[first_text])) first_text += 1;
-    const indent = indentOf(lines[first_text]);
+    while (first_text < body.close and isBlank(lines[first_text])) first_text += 1;
+    const indent = if (first_text < body.close) indentOf(lines[first_text]) else "";
     // Every line of the body must have the indent, or be blank, or the split is not safe.
-    for (lines[open + 1 .. item.last]) |line| {
-        if (!isBlank(line) and !std.mem.startsWith(u8, line, indent)) {
-            try parts.append(arena, .{ .excerpt = .{ .name = name, .lines = whole } });
-            return;
-        }
+    var safe = indent.len > 0 and !(nested and !declaresType(lines[open]));
+    for (lines[open + 1 .. body.close]) |line| {
+        if (!isBlank(line) and !std.mem.startsWith(u8, line, indent)) safe = false;
     }
-    if (indent.len == 0) {
+    if (!safe) {
         try parts.append(arena, .{ .excerpt = .{ .name = name, .lines = whole } });
         return;
     }
 
-    const type_name = if (std.mem.startsWith(u8, name, "extension ")) name["extension ".len..] else name;
-    const members = try items(arena, lines, open + 1, item.last, indent);
+    const type_name = if (std.mem.startsWith(u8, bare, "extension ")) bare["extension ".len..] else bare;
+    const members = try items(arena, lines, open + 1, body.close, indent);
     var parent: std.ArrayList([]const u8) = .empty;
     var children: std.ArrayList(Part) = .empty;
     for (lines[item.first .. open + 1]) |line| try parent.append(arena, line);
@@ -345,24 +401,25 @@ fn splitItem(arena: Allocator, parts: *std.ArrayList(Part), taken: *std.StringHa
     for (members) |member| {
         while (at < member.first) : (at += 1) try parent.append(arena, lines[at]);
         at = member.last + 1;
-        const body = lines[member.first .. member.last + 1];
+        const member_lines = lines[member.first .. member.last + 1];
         var only_comments = true;
-        for (body) |line| if (!isBlank(line) and !isComment(line)) {
+        for (member_lines) |line| if (!isBlank(line) and !isComment(line, hash)) {
             only_comments = false;
         };
         if (only_comments) {
-            for (body) |line| {
+            for (member_lines) |line| {
                 try parent.append(arena, line);
                 if (markTitle(line)) |title| try children.append(arena, .{ .heading = title });
             }
             continue;
         }
-        if (markTitle(body[0])) |title| try children.append(arena, .{ .heading = title });
-        const member_name = try unique(arena, taken, try std.fmt.allocPrint(arena, "{s}.{s}", .{ type_name, try nameOf(arena, lines, member) }));
+        if (markTitle(member_lines[0])) |title| try children.append(arena, .{ .heading = title });
+        const member_bare = try nameOf(arena, lines, member, hash);
+        const member_name = try unique(arena, taken, try std.fmt.allocPrint(arena, "{s}.{s}", .{ type_name, member_bare }));
         try parent.append(arena, try std.fmt.allocPrint(arena, "{s}{s} {s}", .{ indent, ellipsis, member_name }));
-        const dedented = try arena.alloc([]const u8, body.len);
-        for (body, dedented) |line, *d| d.* = if (isBlank(line) and line.len < indent.len) line else line[indent.len..];
-        try children.append(arena, .{ .excerpt = .{ .name = member_name, .lines = dedented } });
+        const dedented = try arena.alloc([]const u8, member_lines.len);
+        for (member_lines, dedented) |line, *d| d.* = if (isBlank(line) and line.len < indent.len) line else line[indent.len..];
+        try splitItem(arena, &children, taken, dedented, .{ .first = 0, .last = dedented.len - 1 }, member_name, member_bare, hash, true);
     }
     while (at <= item.last) : (at += 1) try parent.append(arena, lines[at]);
     try parts.append(arena, .{ .excerpt = .{ .name = name, .lines = parent.items } });
@@ -566,6 +623,105 @@ test "A5: a long type whose body is not indented the same is not split" {
     try t.expect(std.mem.indexOf(u8, text, "S.v0") == null);
 }
 
+test "A5, A6: a Ruby module is split at its members, and the classes in it at their methods" {
+    var arena_state = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var src: std.ArrayList(u8) = .empty;
+    try src.appendSlice(a, "# A weave.\nrequire 'cgi'\n\nmodule Weave\n  ELLIPSIS = \"x\"\n\n  # The lines of ranges.\n  def self.lines_of(r)\n    r\n  end\n\n  class Tree < Base\n");
+    for (0..12) |i| try src.print(a, "    def step{d}(doc)\n      doc\n    end\n\n", .{i});
+    try src.appendSlice(a, "    def long\n");
+    for (0..25) |i| try src.print(a, "      v{d} = 1\n\n", .{i});
+    try src.appendSlice(a, "    end\n\n    def last\n      1\n    end\n  end\nend\n");
+    const text = try expectRoundTrip(a, &.{.{ .path = "weave.rb", .text = src.items }});
+    const want = [_][]const u8{
+        ellipsis ++ " Weave :file: weave.rb",
+        ellipsis ++ " Weave.ELLIPSIS :file: weave.rb",
+        ellipsis ++ " Weave.lines_of :file: weave.rb",
+        ellipsis ++ " Weave.Tree :file: weave.rb",
+        ellipsis ++ " Tree.step0 :file: weave.rb",
+        ellipsis ++ " Tree.step11 :file: weave.rb",
+        ellipsis ++ " Tree.last :file: weave.rb",
+        "  " ++ ellipsis ++ " Weave.Tree\nend\n",
+        "  " ++ ellipsis ++ " Tree.last\nend\n",
+        "[source,ruby]",
+    };
+    for (want) |w| {
+        if (std.mem.indexOf(u8, text, w) == null) {
+            std.debug.print("missing: {s}\n{s}\n", .{ w, text });
+            return error.Missing;
+        }
+    }
+    // The file's leading comment stays in the root, and a long method in a class is not split.
+    try t.expect(std.mem.indexOf(u8, text, ellipsis ++ " block") == null);
+    try t.expect(std.mem.indexOf(u8, text, ellipsis ++ " Tree.long :file: weave.rb") != null);
+    try t.expect(std.mem.indexOf(u8, text, "Tree.long.") == null);
+}
+
+test "A5: a long Ruby method, and a long Lua function, are split at the top level" {
+    var arena_state = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var rb: std.ArrayList(u8) = .empty;
+    try rb.appendSlice(a, "def long(x)\n");
+    for (0..25) |i| try rb.print(a, "  y{d} = x\n\n", .{i});
+    try rb.appendSlice(a, "end\n");
+    var lua: std.ArrayList(u8) = .empty;
+    try lua.appendSlice(a, "-- A module.\nlocal M = {}\n\nfunction M.run()\n");
+    for (0..25) |i| try lua.print(a, "  local v{d} = {d}\n\n", .{ i, i });
+    try lua.appendSlice(a, "end\n\nreturn M\n");
+    const text = try expectRoundTrip(a, &.{ .{ .path = "long.rb", .text = rb.items }, .{ .path = "m.lua", .text = lua.items } });
+    try t.expect(std.mem.indexOf(u8, text, ellipsis ++ " long.y0 :file: long.rb") != null);
+    try t.expect(std.mem.indexOf(u8, text, ellipsis ++ " M.run :file: m.lua") != null);
+    try t.expect(std.mem.indexOf(u8, text, ellipsis ++ " M.run.v24 :file: m.lua") != null);
+}
+
+test "A5: a Python class is split at its methods, though it has no closing line" {
+    var arena_state = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var src: std.ArrayList(u8) = .empty;
+    try src.appendSlice(a, "import os\n\n\n@dataclass\nclass Store(Base):\n    \"\"\"A store.\"\"\"\n\n    # The items.\n    items = []\n\n");
+    for (0..12) |i| try src.print(a, "    @property\n    def get{d}(self):\n        return {d}\n\n", .{ i, i });
+    try src.appendSlice(a, "\ndef main():\n    Store()\n");
+    const text = try expectRoundTrip(a, &.{.{ .path = "store.py", .text = src.items }});
+    const want = [_][]const u8{
+        ellipsis ++ " Store :file: store.py",
+        ellipsis ++ " Store.items :file: store.py",
+        ellipsis ++ " Store.get0 :file: store.py",
+        ellipsis ++ " Store.get11 :file: store.py",
+        ellipsis ++ " main :file: store.py",
+        "class Store(Base):\n    " ++ ellipsis ++ " Store.block\n\n    " ++ ellipsis ++ " Store.items\n",
+        "    " ++ ellipsis ++ " Store.get11\n----\n",
+    };
+    for (want) |w| {
+        if (std.mem.indexOf(u8, text, w) == null) {
+            std.debug.print("missing: {s}\n{s}\n", .{ w, text });
+            return error.Missing;
+        }
+    }
+}
+
+test "A5: a Python class with a string at column 0 is not split" {
+    var arena_state = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var src: std.ArrayList(u8) = .empty;
+    try src.appendSlice(a, "class S:\n    doc = \"\"\"\nat column 0\n\"\"\"\n\n");
+    for (0..45) |i| try src.print(a, "    v{d} = 0\n\n", .{i});
+    const text = try expectRoundTrip(a, &.{.{ .path = "s.py", .text = src.items }});
+    try t.expect(std.mem.indexOf(u8, text, "S.v0") == null);
+}
+
+test "A4: comment lines" {
+    try t.expect(isComment("  # a comment", true));
+    try t.expect(isComment("#", true));
+    try t.expect(isComment("-- a comment", true));
+    try t.expect(!isComment("# A heading", false));
+    try t.expect(!isComment("#include <stdio.h>", true));
+    try t.expect(!isComment("--x;", true));
+}
+
 test "A7: every block has a source line, text when the language is not known" {
     var arena_state = std.heap.ArenaAllocator.init(t.allocator);
     defer arena_state.deinit();
@@ -617,9 +773,17 @@ test "A6: names" {
         .{ "extension Array where Element: Equatable {", "extension Array" },
         .{ "comptime {", "block" },
         .{ "/// doc\nfunc go() {}", "go" },
+        .{ "# doc\ndef self.lines_of(ranges)", "lines_of" },
+        .{ "class Tree < Asciidoctor::Extensions::Treeprocessor", "Tree" },
+        .{ "defmodule Shop.Cart do", "Shop.Cart" },
+        .{ "local function helper(x)", "helper" },
+        .{ "function M.run()", "M.run" },
+        .{ "async def fetch(url):", "fetch" },
+        .{ "def open(self):", "open" },
+        .{ "module.exports = {", "module" },
     };
     for (cases) |c| {
         const lines = try scan.splitLines(a, c[0]);
-        try t.expectEqualStrings(c[1], try nameOf(a, lines, .{ .first = 0, .last = lines.len - 1 }));
+        try t.expectEqualStrings(c[1], try nameOf(a, lines, .{ .first = 0, .last = lines.len - 1 }, true));
     }
 }
