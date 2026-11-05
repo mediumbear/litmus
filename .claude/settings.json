@@ -1,0 +1,7 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      { "hooks": [{ "type": "command", "command": "cd \"$CLAUDE_PROJECT_DIR\" && zig-out/bin/litmus selection 2>/dev/null || true" }] }
+    ]
+  }
+}
